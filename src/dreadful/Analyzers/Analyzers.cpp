@@ -21,9 +21,9 @@ auto FindStorage(minsn_t* instruction, Analysis::Engine& engine) -> Analysis::Me
 
 ea_t GetStorageKey(minsn_t* instruction, Analysis::Engine& engine)
 {
-	func_t* function = IDA::API::GetFunction(instruction->ea);
-	if (!function)
-		throw std::runtime_error("Function not found at address");
+    func_t* function = IDA::API::GetFunction(instruction->ea);
+    if (!function)
+        throw std::runtime_error("Function not found at address");
 
     return function->start_ea;
 }
@@ -76,56 +76,56 @@ void Analysis::Meta::Process(Analysis::Engine& pool) {
     }
 
     // Prepare mangled names for all methods
-	Mangler::Result mangledNames = Mangler{}.Execute(CStrId.Value, Type);
+    Mangler::Result mangledNames = Mangler{}.Execute(CStrId.Value, Type);
 
     bool validState = (Base != 0) != ReflObject.Register.has_value();
     assert(validState && "Invalid state for analysis");
 
-	if (Parent.Variable != 0) {
-	    // There is a call to a parent's GetReflInfo; 
-	    //   The ConstructorCall analyzer saved the offset of the relevant
-	    //   stack variable in ParentProvider.
-	    // TODO: find the function - filtering by variable index in stk
-	    // Then, just save the function's address.
-	
-	    struct ParentAssignment final {
-	        using Filter = IDA::API::MemoryXferInstruction<
-	            IDA::API::OperandFilter<mop_d>,
-	            IDA::API::OperandFilter<mop_l>
-	        >;
-	
-	        explicit ParentAssignment(int variableIndex) : _variableIndex(variableIndex) { }
-	
-	        bool TryProcess(minsn_t* instruction, Analysis::Engine& engine) {
-	            return Filter::TryProcess(instruction, [&instruction, &engine, this](minsn_t* instruction, lvar_ref_t* var) -> bool {
-	                auto&& functionInfo = FindStorage(instruction, engine);
-	                if (!functionInfo)
-	                    return false;
-	
-	                if (var->idx != this->_variableIndex)
-	                    return false;
-	
-	                // https://i.imgur.com/kbppXhg.png
-	                if (instruction->opcode != mcode_t::m_call
-	                    || instruction->l.t != mop_v
-	                    || instruction->d.t != mop_f
-	                    || instruction->d.f->args.size() != 0)
-	                    return false;
-	
-	                functionInfo->Parent.GetReflInfo = instruction->l.g;
-	                return true;
-	            });
-	        }
-	
-	    private:
-	        int _variableIndex = 0;
-	    };
-	
-	    InstructionVisitor<Analysis::Engine, ParentAssignment>::Run(GetReflInfo.Microcode.get(), 
+    if (Parent.Variable != 0) {
+        // There is a call to a parent's GetReflInfo; 
+        //   The ConstructorCall analyzer saved the offset of the relevant
+        //   stack variable in ParentProvider.
+        // TODO: find the function - filtering by variable index in stk
+        // Then, just save the function's address.
+    
+        struct ParentAssignment final {
+            using Filter = IDA::API::MemoryXferInstruction<
+                IDA::API::OperandFilter<mop_d>,
+                IDA::API::OperandFilter<mop_l>
+            >;
+    
+            explicit ParentAssignment(int variableIndex) : _variableIndex(variableIndex) { }
+    
+            bool TryProcess(minsn_t* instruction, Analysis::Engine& engine) {
+                return Filter::TryProcess(instruction, [&instruction, &engine, this](minsn_t* instruction, lvar_ref_t* var) -> bool {
+                    auto&& functionInfo = FindStorage(instruction, engine);
+                    if (!functionInfo)
+                        return false;
+    
+                    if (var->idx != this->_variableIndex)
+                        return false;
+    
+                    // https://i.imgur.com/kbppXhg.png
+                    if (instruction->opcode != mcode_t::m_call
+                        || instruction->l.t != mop_v
+                        || instruction->d.t != mop_f
+                        || instruction->d.f->args.size() != 0)
+                        return false;
+    
+                    functionInfo->Parent.GetReflInfo = instruction->l.g;
+                    return true;
+                });
+            }
+    
+        private:
+            int _variableIndex = 0;
+        };
+    
+        InstructionVisitor<Analysis::Engine, ParentAssignment>::Run(GetReflInfo.Microcode.get(), 
             pool, *this, ParentAssignment {Parent.Variable});
 
-	    assert(Parent.Variable != 0);
-	}
+        assert(Parent.Variable != 0);
+    }
 
     // Constructor found, name it!
     // if (ReflObject.Constructor != 0) {
@@ -139,12 +139,12 @@ void Analysis::Meta::Process(Analysis::Engine& pool) {
 }
 
 /* static */ bool base::global::CStrId::CStrId::TryProcess(minsn_t* instruction, Analysis::Engine& engine, Analysis::Meta& storage) noexcept {
-	using Base = IDA::API::FunctionCallInstruction<
-		Address,
-		Filters::Pointer<false>, // Pointer to local variable
-		Filters::GlobalPointer, // Pointer to .data
-		Filters::ExpectedValueOperand<1uLL>
-	>;
+    using Base = IDA::API::FunctionCallInstruction<
+        Address,
+        Filters::Pointer<false>, // Pointer to local variable
+        Filters::GlobalPointer, // Pointer to .data
+        Filters::ExpectedValueOperand<1uLL>
+    >;
 
     return Base::TryProcess(instruction, [&storage](std::variant<ea_t, lvar_ref_t*> instance, ea_t stringAddress, size_t /* one */) -> bool {
         // Get the string value and assign it to this function.
@@ -165,43 +165,43 @@ void Analysis::Meta::Process(Analysis::Engine& pool) {
 }
 
 bool CRC64::TryProcess(minsn_t* instruction, Analysis::Engine& engine, Analysis::Meta& storage) noexcept {
-	using Base = IDA::API::FunctionCallInstruction<
-		Address,
-		Filters::GlobalPointer,
-		Filters::IntegerOperand
-	>;
+    using Base = IDA::API::FunctionCallInstruction<
+        Address,
+        Filters::GlobalPointer,
+        Filters::IntegerOperand
+    >;
 
-	return Base::TryProcess(instruction, [&storage](ea_t stringAddress, size_t length) {
-		std::string checksumName = IDA::API::GetStringLiteral(stringAddress, STRTYPE_C);
-		if (checksumName.size() != length)
-			return false;
+    return Base::TryProcess(instruction, [&storage](ea_t stringAddress, size_t length) {
+        std::string checksumName = IDA::API::GetStringLiteral(stringAddress, STRTYPE_C);
+        if (checksumName.size() != length)
+            return false;
 
-		static constexpr const struct {
-			std::string_view Name;
-			Analyzers::ReflectiveType Type;
-		} types[] = {
-			{ "base::reflection::CClass", Analyzers::ReflectiveType::CClass },
-			{ "base::reflection::CType", Analyzers::ReflectiveType::CType },
-			{ "base::reflection::CEnumType", Analyzers::ReflectiveType::CEnumType },
-			{ "base::reflection::CPointerType", Analyzers::ReflectiveType::CPointerType },
-			{ "base::reflection::CCollectionType", Analyzers::ReflectiveType::CCollectionType },
-			{ "base::reflection::CEnumConstRef", Analyzers::ReflectiveType::CEnumConstRef },
-			{ "base::reflection::CFlagsetConstRef", Analyzers::ReflectiveType::CFlagsetConstRef },
-			{ "base::reflection::CFunction", Analyzers::ReflectiveType::CFunction },
+        static constexpr const struct {
+            std::string_view Name;
+            Analyzers::ReflectiveType Type;
+        } types[] = {
+            { "base::reflection::CClass", Analyzers::ReflectiveType::CClass },
+            { "base::reflection::CType", Analyzers::ReflectiveType::CType },
+            { "base::reflection::CEnumType", Analyzers::ReflectiveType::CEnumType },
+            { "base::reflection::CPointerType", Analyzers::ReflectiveType::CPointerType },
+            { "base::reflection::CCollectionType", Analyzers::ReflectiveType::CCollectionType },
+            { "base::reflection::CEnumConstRef", Analyzers::ReflectiveType::CEnumConstRef },
+            { "base::reflection::CFlagsetConstRef", Analyzers::ReflectiveType::CFlagsetConstRef },
+            { "base::reflection::CFunction", Analyzers::ReflectiveType::CFunction },
             // This is a hack
-			{ "base::reflection::CFunction const*", Analyzers::ReflectiveType::CFunction_ConstPtr },
-		};
+            { "base::reflection::CFunction const*", Analyzers::ReflectiveType::CFunction_ConstPtr },
+        };
 
-		for (auto&& kv : types) {
-			if (checksumName != kv.Name)
-				continue;
+        for (auto&& kv : types) {
+            if (checksumName != kv.Name)
+                continue;
 
-			storage.Type = kv.Type;
-			IDA::API::LogMessage("(Info) Reflection data is represented by a {}.", kv.Name);
-			return true;
-		}
+            storage.Type = kv.Type;
+            IDA::API::LogMessage("(Info) Reflection data is represented by a {}.", kv.Name);
+            return true;
+        }
 
-		return true;
+        return true;
     });
 }
 
@@ -213,22 +213,22 @@ namespace vtables {
 }
 
 /* static */ bool VtableAssignment::TryProcess(minsn_t* instruction, Analysis::Engine& engine, Analysis::Meta& storage) noexcept {
-	using Local = IDA::API::Instruction<
-		mcode_t::m_stx,
-		Filters::GlobalPointer,
-		IDA::API::OperandFilter<mop_r>,
-		IDA::API::OperandFilter<mop_l>
-	>;
-	using LocalProperty = IDA::API::Instruction<
-		mcode_t::m_stx,
-		IDA::API::OperandFilter<mop_n, mop_a, mop_l>,
-		IDA::API::OperandFilter<mop_r>,
-		IDA::API::OperandFilter<mop_d>
-	>;
-	using Global = IDA::API::MemoryXferInstruction<
-		Filters::GlobalPointer,
-		Filters::GlobalPointer
-	>;
+    using Local = IDA::API::Instruction<
+        mcode_t::m_stx,
+        Filters::GlobalPointer,
+        IDA::API::OperandFilter<mop_r>,
+        IDA::API::OperandFilter<mop_l>
+    >;
+    using LocalProperty = IDA::API::Instruction<
+        mcode_t::m_stx,
+        IDA::API::OperandFilter<mop_n, mop_a, mop_l>,
+        IDA::API::OperandFilter<mop_r>,
+        IDA::API::OperandFilter<mop_d>
+    >;
+    using Global = IDA::API::MemoryXferInstruction<
+        Filters::GlobalPointer,
+        Filters::GlobalPointer
+    >;
 
     static auto handler = [](Analysis::Meta& functionInfo, ea_t offset, ea_t value) {
         // TODO:
@@ -298,21 +298,21 @@ namespace vtables {
 }
 
 /* static */ bool ConstructorCall::TryProcess(minsn_t* instruction, Analysis::Engine& engine, Analysis::Meta& storage) noexcept {
-	// General purpose handler for most reflexpr object ctors.
-	using Complex = IDA::API::AnyFunctionCallInstruction<
-		Filters::GlobalPointer, // &unk_xxxx
-		Filters::LocalPointer, // a2
-		IDA::API::OperandFilter<mop_l, mop_n>, // pointer to parent type (or nullptr) through variable
-		Filters::FunctionPointer,
-		Filters::FunctionPointer
-	>;
+    // General purpose handler for most reflexpr object ctors.
+    using Complex = IDA::API::AnyFunctionCallInstruction<
+        Filters::GlobalPointer, // &unk_xxxx
+        Filters::LocalPointer, // a2
+        IDA::API::OperandFilter<mop_l, mop_n>, // pointer to parent type (or nullptr) through variable
+        Filters::FunctionPointer,
+        Filters::FunctionPointer
+    >;
 
-	// Handler for constructors to simple types that don't have lambda/parent arguments
-	// See eg meta::string.
-	using Simple = IDA::API::AnyFunctionCallInstruction<
-		Filters::GlobalPointer, // &unk_xxx
-		Filters::LocalPointer // a2
-	>;
+    // Handler for constructors to simple types that don't have lambda/parent arguments
+    // See eg meta::string.
+    using Simple = IDA::API::AnyFunctionCallInstruction<
+        Filters::GlobalPointer, // &unk_xxx
+        Filters::LocalPointer // a2
+    >;
 
     return Complex::TryProcess(instruction, [&storage, &instruction](ea_t instance, lvar_ref_t* name, std::variant<lvar_ref_t*, mnumber_t*> parent, ea_t fn0, ea_t fn1) {
         storage.Base = instance;
@@ -333,10 +333,10 @@ namespace vtables {
             }
         }, parent);
     }) || Simple::TryProcess(instruction, [&instruction, &storage](ea_t instance, lvar_ref_t* name) {
-		storage.Base = instance;
+        storage.Base = instance;
 
         storage.Initialize.Base = Simple::GetCallee(instruction);
-		storage.Initialize.Microcode = IDA::API::GenerateMicrocode(storage.Initialize.Base);
+        storage.Initialize.Microcode = IDA::API::GenerateMicrocode(storage.Initialize.Base);
         return true;
     });
 }

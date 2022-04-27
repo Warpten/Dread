@@ -41,21 +41,21 @@ namespace utils {
 }
 
 struct less_rule {
-	constexpr bool operator () (const func_t* lhs, const func_t* rhs) const {
-		if (lhs == nullptr || rhs == nullptr)
-			return false;
+    constexpr bool operator () (const func_t* lhs, const func_t* rhs) const {
+        if (lhs == nullptr || rhs == nullptr)
+            return false;
 
-		return lhs->start_ea < rhs->start_ea&& lhs->end_ea < rhs->end_ea;
-	}
+        return lhs->start_ea < rhs->start_ea&& lhs->end_ea < rhs->end_ea;
+    }
 };
 
 struct equal_rule {
-	constexpr bool operator () (const func_t* lhs, const func_t* rhs) const {
-		if (lhs == nullptr || rhs == nullptr)
-			return lhs == rhs;
+    constexpr bool operator () (const func_t* lhs, const func_t* rhs) const {
+        if (lhs == nullptr || rhs == nullptr)
+            return lhs == rhs;
 
-		return lhs->start_ea == rhs->start_ea&& lhs->end_ea == rhs->end_ea;
-	}
+        return lhs->start_ea == rhs->start_ea&& lhs->end_ea == rhs->end_ea;
+    }
 };
 
 template <typename T>
@@ -104,8 +104,8 @@ struct Plugin : plugmod_t {
 
             // Get this function's microcode.
             functionInfo.GetReflInfo.Microcode = IDA::API::GenerateMicrocode(function->start_ea);
-			if (!functionInfo.GetReflInfo.Microcode) {
-				IDA::API::LogMessage("(Error) An error occurred while generating microcode.\n");
+            if (!functionInfo.GetReflInfo.Microcode) {
+                IDA::API::LogMessage("(Error) An error occurred while generating microcode.\n");
                 return;
             }
 
@@ -139,7 +139,7 @@ struct Plugin : plugmod_t {
         auto guardReleaseRefs = collect_xref.operator()<std::set>(/*__cxa_guard_release*/0x00000071011F3010uLL);
         auto cstridRefs       = collect_xref.operator()<std::set>(base::global::CStrId::CStrId::Address);
 
-		std::vector<IdaFunction> filteredReferences =
+        std::vector<IdaFunction> filteredReferences =
             ::utils::set_intersection(decltype(filteredReferences) {}, guardAcquireRefs, guardReleaseRefs, cstridRefs);
         
         size_t i = 0;

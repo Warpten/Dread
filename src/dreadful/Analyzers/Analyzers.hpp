@@ -24,30 +24,30 @@ namespace Analysis {
     struct Meta {
         void Process(Engine& engine);
 
-		ea_t Base = 0; //< Address of the `_instance` static global.
+        ea_t Base = 0; //< Address of the `_instance` static global.
         
         struct {
             std::string Value;
             size_t Variable = 0;
         } CStrId;
 
-		struct {
-			// Stack index of variable that holds a pointer to parent type's reflinfo
-			// as returned by Meta<T>::GetReflInfo()
+        struct {
+            // Stack index of variable that holds a pointer to parent type's reflinfo
+            // as returned by Meta<T>::GetReflInfo()
             int Variable = 0;
             ea_t GetReflInfo;
         } Parent;
 
-		struct Function {
-			ea_t Base = 0;
-			std::unique_ptr<mba_t> Microcode;
+        struct Function {
+            ea_t Base = 0;
+            std::unique_ptr<mba_t> Microcode;
             std::vector<ea_t> ExtraParameters;
-		};
+        };
 
-		Function GetReflInfo; //< Represents the `GetReflInfo` method.
-		Function Initialize; //< Represents the `Initialize` method.
+        Function GetReflInfo; //< Represents the `GetReflInfo` method.
+        Function Initialize; //< Represents the `Initialize` method.
 
-		Analyzers::ReflectiveType Type = Analyzers::ReflectiveType::Unknown;
+        Analyzers::ReflectiveType Type = Analyzers::ReflectiveType::Unknown;
 
         struct {
 
@@ -70,7 +70,7 @@ namespace Analysis {
         } ReflObject;
     };
 
-	struct Engine {
+    struct Engine {
         using element_type = Meta;
 
         Meta& FindEntry(ea_t address) {
@@ -101,11 +101,11 @@ namespace Analysis {
                 v.Process(*this);
         }
 
-	private:
-		std::unordered_map<ea_t, Meta> _storage;
+    private:
+        std::unordered_map<ea_t, Meta> _storage;
         // Indexes into `storage`.
         std::unordered_map<std::string, Meta*> _typeStorage;
-	};
+    };
 }
 
 namespace Filters {
@@ -292,7 +292,7 @@ struct ConstructorCall final {
 
 template <typename T, typename E>
 concept is_static_tryprocess = requires (minsn_t* i, E& e, typename E::element_type& s) {
-	{ T::TryProcess(i, e, s) } -> std::same_as<bool>;
+    { T::TryProcess(i, e, s) } -> std::same_as<bool>;
 };
 
 // Actual visitor
@@ -303,19 +303,19 @@ struct InstructionVisitor : minsn_visitor_t {
     constexpr static const bool instance_eval = !(is_static_tryprocess<Ts, E> && ...);
 
 public:
-	static bool Run(mba_t* microcode, E& engine, typename E::element_type& storage)
-		requires (!instance_eval)
-	{
-		InstructionVisitor<E, Ts...> self{ engine, microcode, storage };
-		return microcode->for_all_insns(self);
-	}
+    static bool Run(mba_t* microcode, E& engine, typename E::element_type& storage)
+        requires (!instance_eval)
+    {
+        InstructionVisitor<E, Ts...> self{ engine, microcode, storage };
+        return microcode->for_all_insns(self);
+    }
 
-	static bool Run(mba_t* microcode, E& engine, typename E::element_type& storage, Ts&&... analyzers)
-		requires (instance_eval)
-	{
-		InstructionVisitor<E, Ts...> self{ engine, microcode, storage, std::forward<Ts&&>(analyzers)... };
-		return microcode->for_all_insns(self);
-	}
+    static bool Run(mba_t* microcode, E& engine, typename E::element_type& storage, Ts&&... analyzers)
+        requires (instance_eval)
+    {
+        InstructionVisitor<E, Ts...> self{ engine, microcode, storage, std::forward<Ts&&>(analyzers)... };
+        return microcode->for_all_insns(self);
+    }
 
 private:
     InstructionVisitor(E& engine, mba_t* microcode, typename E::element_type& storage) noexcept requires (!instance_eval)
@@ -334,25 +334,25 @@ private:
     }
 
 private:
-	template <size_t I>
-	bool TryProcess(minsn_t* instruction, E& engine) {
-		if constexpr (I < sizeof...(Ts)) {
-			if constexpr (instance_eval) {
-				if (!std::get<I>(*_analyzers).TryProcess(instruction, engine))
-					return TryProcess<I + 1>(instruction, engine);
+    template <size_t I>
+    bool TryProcess(minsn_t* instruction, E& engine) {
+        if constexpr (I < sizeof...(Ts)) {
+            if constexpr (instance_eval) {
+                if (!std::get<I>(*_analyzers).TryProcess(instruction, engine))
+                    return TryProcess<I + 1>(instruction, engine);
             }
-			else {
-				using element_type = std::tuple_element_t<I, typename decltype(_analyzers)::value_type>;
+            else {
+                using element_type = std::tuple_element_t<I, typename decltype(_analyzers)::value_type>;
 
-				if (!element_type::TryProcess(instruction, engine, _storage))
-					return TryProcess<I + 1>(instruction, engine);
+                if (!element_type::TryProcess(instruction, engine, _storage))
+                    return TryProcess<I + 1>(instruction, engine);
             }
 
             return true;
-		}
-		else
-			return false;
-	}
+        }
+        else
+            return false;
+    }
 
     E& _engine;
     typename E::element_type& _storage;
