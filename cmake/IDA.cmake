@@ -151,6 +151,39 @@ endif ()
 # Functions for adding IDA plugin targets                                                         #
 # =============================================================================================== #
 
+function (link_ida plugin_name)
+    # Compiler specific properties.
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+        target_compile_definitions(${plugin_name} PUBLIC "__VC__")
+        target_compile_options(${plugin_name} PUBLIC "/wd4996" "/MP")
+    endif ()
+
+    # General definitions required throughout all kind of IDA modules.
+    target_compile_definitions(${plugin_name}
+		PUBLIC
+			"NO_OBSOLETE_FUNCS"
+			"__IDP__")
+
+    target_include_directories(${plugin_name}
+		PUBLIC 
+			"${IDA_SDK}/include"
+			"${IDA_INSTALL_DIR}/plugins/hexrays_sdk/include"
+    )
+
+    if (IDA_BINARY_64)
+        target_compile_definitions(${plugin_name} PUBLIC "__X64__")
+    endif ()
+	
+    if (IDA_EA_64)
+        target_compile_definitions(${plugin_name} PUBLIC "__EA64__")
+    endif ()
+
+    # Link against IDA (or the SDKs libs on Windows).
+    target_link_libraries(${plugin_name}
+		${ida_libraries})
+
+endfunction (link_ida)
+
 function (add_ida_plugin plugin_name)
     set(sources ${ARGV})
     if (sources)
@@ -161,23 +194,7 @@ function (add_ida_plugin plugin_name)
     string(STRIP "${sources}" sources)
     add_library(${plugin_name} SHARED ${sources})
 
-    # Compiler specific properties.
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-        target_compile_definitions(${plugin_name} PUBLIC "__VC__")
-        target_compile_options(${plugin_name} PUBLIC "/wd4996" "/MP")
-    endif ()
-
-    # General definitions required throughout all kind of IDA modules.
-    target_compile_definitions(${plugin_name} PUBLIC
-        "NO_OBSOLETE_FUNCS"
-        "__IDP__")
-
-    target_include_directories(${plugin_name} PUBLIC "${IDA_SDK}/include")
-	target_include_directories(${plugin_name} PUBLIC "${IDA_INSTALL_DIR}/plugins/hexrays_sdk/include")
-
-    if (IDA_BINARY_64)
-        target_compile_definitions(${plugin_name} PUBLIC "__X64__")
-    endif ()
+    link_ida(${plugin_name})
 
     # OS specific stuff.
     if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
@@ -235,13 +252,6 @@ function (add_ida_plugin plugin_name)
         PREFIX ""
         SUFFIX ${plugin_extension}
         OUTPUT_NAME ${plugin_name})
-
-    if (IDA_EA_64)
-        target_compile_definitions(${plugin_name} PUBLIC "__EA64__")
-    endif ()
-
-    # Link against IDA (or the SDKs libs on Windows).
-    target_link_libraries(${plugin_name} ${ida_libraries})
 
     # Define install rule
     install(TARGETS ${plugin_name} DESTINATION plugins)

@@ -40,7 +40,7 @@ message(STATUS "Linking with LLVM binaries: ${llvm_libs}")
 message(STATUS "Linking with Clang binaries: ${clang_libs}")
 
 # Link against LLVM/Clang libraries
-target_link_libraries(Dreadful ${llvm_libs} clangAST clangTooling)
+target_link_libraries(Dreadful ${llvm_libs} ${clang_libs} clangAST clangTooling)
 
 if (MSVC)
     target_compile_options(Dreadful PUBLIC "/Zc:__cplusplus")
