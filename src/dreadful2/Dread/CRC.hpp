@@ -11,7 +11,7 @@ namespace CRC {
 	struct Engine {
 		using value_type = std::common_type_t<decltype(Seed), decltype(Polynomial), decltype(FinalXor)>;
 
-		constexpr CRC() noexcept {
+		constexpr Engine() noexcept {
 			for (size_t dividend = 0; dividend < _lookupTable.size(); ++dividend) {
 				value_type currentByte = dividend << 56uLL;
 				for (size_t i = 0; i < currentByte; ++i) {

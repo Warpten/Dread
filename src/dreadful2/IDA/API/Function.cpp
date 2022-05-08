@@ -29,7 +29,45 @@ namespace IDA::API {
 		_rva = function->start_ea;
 	}
 
-	std::string Function::GetDeclaration() const {
+	const auto get_func_type_data = [](ea_t rva) {
+		tinfo_t functionInfo;
+		bool success = get_tinfo(&functionInfo, _rva);
+		assert(success);
+
+		func_type_data_t functionData;
+		success = functionInfo.get_func_details(&functionData);
+		assert(success);
+
+		return functionData;
+	};
+
+	Type Function::GetReturnType() const {
+		func_type_data_t functionData = get_func_type_data(_rva);
+
+		return Type{ functionData.rettype };
+	}
+
+	size_t Function::GetArgumentCount() const {
+		func_type_data_t functionData = get_func_type_data(_rva);
+
+		return functionData.size();
+	}
+
+	Type Function::GetArgumentType(size_t index) const {
+		func_type_data_t functionData = get_func_type_data(_rva);
+		assert(index < functionData.size());
+
+		return Type{ functionData[index].type };
+	}
+
+	std::string Function::GetArgumentName(size_t index) const {
+		func_type_data_t functionData = get_func_type_data(_rva);
+		assert(index < functionData.size());
+
+		return functionData[index].name.c_str();
+	}
+
+	std::string Function::GetDeclaration(bool simplified /* = false */) const {
 		tinfo_t functionInfo;
 		if (!get_tinfo(&functionInfo, _rva))
 			return "";
@@ -38,11 +76,24 @@ namespace IDA::API {
 		functionInfo.get_func_details(&functionData);
 
 		std::stringstream formatStream;
-		formatStream << functionData.rettype.dstr() << ' ' << GetName() << '(';
-		if (functionData.size() > 0) {
-			for (size_t i = 0; i < functionData.size(); ++i)
-				formatStream << functionData[i].type.dstr() << ' ' << functionData[i].name.c_str() << ", ";
-			formatStream.seekp(-2, std::ios::cur);
+		auto simplifyTypeIfNeeded = [&](tinfo_t type, auto&& ref) -> std::string {
+			if (simplified) {
+				if (type.is_ptr()) {
+					tinfo_t pointedType = type.get_pointed_object();
+					return ref(pointedType, ref) + "*";
+				}
+
+				// TODO: Simplify structs, or start dumping them in the pseudocode as well ??
+			}
+
+			return type.dstr();
+		};
+
+		formatStream << simplifyTypeIfNeeded(functionData.rettype, simplifyTypeIfNeeded) << ' ' << GetName() << '(';
+		for (size_t i = 0; i < functionData.size(); ++i) {
+			if (i > 0)
+				formatStream << ", ";
+			formatStream << simplifyTypeIfNeeded(functionData[i].type, simplifyTypeIfNeeded) << ' ' << functionData[i].name.c_str() << ", ";
 		}
 		formatStream << ");";
 		return formatStream.str();
@@ -62,13 +113,12 @@ namespace IDA::API {
 		if (failure.code != merror_t::MERR_OK)
 			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
 
-		functionPointer->build_c_tree();
-
 		assert(functionPointer != nullptr);
 
 		if (filter != nullptr)
 			filter(*functionPointer);
 
+		functionPointer->build_c_tree();
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
 
 		std::stringstream assembledPseudocode;
@@ -101,15 +151,20 @@ namespace IDA::API {
 			}
 
 			for (ea_t dataReference : dataReferences) {
-				auto name = get_name(dataReference);
+				std::string name = get_name(dataReference).c_str();
 				if (name.empty())
 					continue;
 
-				assembledPseudocode << "\n_QWORD " << name.c_str() << ';';
+				assembledPseudocode << "\n_QWORD " << name << ';';
 			}
 
-			for (ea_t codeReference : codeReferences)
-				assembledPseudocode << "\n" << IDA::API::Function{codeReference}.GetDeclaration() << ';';
+			for (ea_t codeReference : codeReferences) {
+				std::string name = get_name(codeReference).c_str();
+				if (name.empty())
+					continue;
+
+				assembledPseudocode << "\n" << IDA::API::Function{ codeReference }.GetDeclaration(true);
+			}
 		}
 
 		assembledPseudocode << "\n\n";

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Type.hpp"
+
 #include <hexrays.hpp>
 
 #include <functional>
@@ -16,7 +18,12 @@ namespace IDA::API {
 		ea_t GetAddress() const { return _rva; }
 		std::string GetName() const;
 
-		std::string GetDeclaration() const;
+		std::string GetDeclaration(bool simplified = false) const;
+
+		Type GetReturnType() const;
+		size_t GetArgumentCount() const;
+		Type GetArgumentType(size_t index) const;
+		std::string GetArgumentName(size_t index) const;
 
 		/// <summary>
 		/// Decompiles the function. Returns the decompiled pseudocode.
