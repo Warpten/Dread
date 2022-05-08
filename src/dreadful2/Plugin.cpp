@@ -150,7 +150,7 @@ plugin_t PLUGIN = {
 void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
     // Corresponds to the game's CRC engine.
     using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
-    constexpr static const DreadEngine checksumEngine_;
+    constexpr DreadEngine checksumEngine_;
 
     IDA::API::Message("Searching for references to {:#016x}.\n", versionInfo->Properties.CRC64);
     IDA::API::Function checksumFunction(versionInfo->Properties.CRC64);

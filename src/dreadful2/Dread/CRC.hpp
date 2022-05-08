@@ -11,20 +11,25 @@ namespace CRC {
 	struct Engine {
 		using value_type = std::common_type_t<decltype(Seed), decltype(Polynomial), decltype(FinalXor)>;
 
+		// Implementation without lookup tables because MSVC complains about step count
+		//   and I don't want to change it.
 		constexpr Engine() noexcept {
-			for (size_t dividend = 0; dividend < _lookupTable.size(); ++dividend) {
-				value_type currentByte = dividend << 56uLL;
-				for (size_t i = 0; i < currentByte; ++i) {
-					if ((dividend & 0x80) != 0) {
-						currentByte <<= 1;
-						currentByte ^= Polynomial;
-					}
-					else
-						currentByte <<= 1;
-				}
-
-				_lookupTable[dividend] = currentByte;
-			}
+			// Left for posterity.
+			// for (uint8_t dividend = 0; dividend < _lookupTable.size(); ++dividend) {
+			// 	value_type currentByte = value_type(dividend) << 56uLL;
+			// 
+			// 	value_type value = currentByte;
+			// 	for (size_t i = 0; i < currentByte; ++i) {
+			// 		if ((dividend & 0x80) != 0) {
+			// 			value <<= 1;
+			// 			value ^= Polynomial;
+			// 		}
+			// 		else
+			// 			value <<= 1;
+			// 	}
+			// 
+			// 	_lookupTable[dividend] = value;
+			// }
 		}
 
 		constexpr value_type operator () (std::string_view input) const noexcept {
@@ -36,11 +41,21 @@ namespace CRC {
 					character = (character * 0x02'02'02'02'02uLL & 0x010884422010uLL) % 1023;
 				}
 
+				// Left for posterity
+				// checksum = checksum ^ (value_type(character) << 56uLL);
+				// auto lookupIndex = checksum >> 56;
+				// assert(lookupIndex >= 0 && lookupIndex <= _lookupTable.size());
+				// checksum <<= 8uLL;
+				// checksum ^= _lookupTable[lookupIndex];
+
 				checksum = checksum ^ (value_type(character) << 56uLL);
-				auto lookupIndex = checksum >> 56;
-				assert(lookupIndex >= 0 && lookupIndex <= _lookupTable.size());
-				checksum <<= 8uLL;
-				checksum ^= _lookupTable[lookupIndex];
+				for (size_t i = 0; i < 8; ++i) {
+					if ((checksum >> 56) & 0x80) {
+						checksum = (checksum << 1) ^ Polynomial;
+					}
+					else
+						checksum <<= 1;
+				}
 			}
 
 			if constexpr (ReflectResult) {
@@ -51,20 +66,12 @@ namespace CRC {
 					mask ^= (mask << shift);
 					checksum = ((checksum & mask) >> shift) | ((checksum & ~mask) << shift);
 				}
-
-				// Unrolled CRC64 loop for reference
-				// checksum = ((checksum & 0xAAAA'AAAA'AAAA'AAAAuLL) >> 1)  | ((checksum & 0x5555'5555'5555'5555uLL) << 1);
-				// checksum = ((checksum & 0xCCCC'CCCC'CCCC'CCCCuLL) >> 2)  | ((checksum & 0x3333'3333'3333'3333uLL) << 2);
-				// checksum = ((checksum & 0xF0F0'F0F0'F0F0'F0F0uLL) >> 4)  | ((checksum & 0x0F0F'0F0F'0F0F'0F0FuLL) << 4);
-				// checksum = ((checksum & 0xFF00'FF00'FF00'FF00uLL) >> 8)  | ((checksum & 0x00FF'00FF'00FF'00FFuLL) << 8);
-				// checksum = ((checksum & 0xFFFF'0000'FFFF'0000uLL) >> 10) | ((checksum & 0x0000'FFFF'0000'FFFFuLL) << 10);
-				// checksum = ((checksum & 0xFFFF'FFFF'0000'0000uLL) >> 20) | ((checksum & 0x0000'0000'FFFF'FFFFuLL) << 20);
 			}
 
 			return checksum ^ FinalXor;
 		}
 
 	private:
-		const std::array<value_type, 256> _lookupTable;
+		// std::array<value_type, 256> _lookupTable;
 	};
 }

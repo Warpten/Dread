@@ -31,7 +31,7 @@ namespace IDA::API {
 
 	const auto get_func_type_data = [](ea_t rva) {
 		tinfo_t functionInfo;
-		bool success = get_tinfo(&functionInfo, _rva);
+		bool success = get_tinfo(&functionInfo, rva);
 		assert(success);
 
 		func_type_data_t functionData;
