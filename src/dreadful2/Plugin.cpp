@@ -9,6 +9,7 @@
 #pragma warning(pop)
 
 #include "Analyzer.hpp"
+#include "Dread/CRC.hpp"
 #include "IDA/API.hpp"
 #include "IDA/API/Function.hpp"
 
@@ -146,14 +147,10 @@ plugin_t PLUGIN = {
     "",                  // Hotkey
 };
 
-template <typename T>
-concept Visitor = requires (T a) {
-    a.Visit(std::declval<uint64_t>());
-    a.Visit(std::declval<std::string_view>());
-};
-
 void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
-    // return;
+    // Corresponds to the game's CRC engine.
+    using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
+    constexpr static const DreadEngine checksumEngine_;
 
     IDA::API::Message("Searching for references to {:#016x}.\n", versionInfo->Properties.CRC64);
     IDA::API::Function checksumFunction(versionInfo->Properties.CRC64);
@@ -194,24 +191,21 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         std::stringstream typeOutput;
         typeOutput << "struct Metadata<" << reflInfo.Name << "> {\n";
         typeOutput << "    constexpr static const std::string_view Name = " << reflInfo.Name << ";\n";
-        typeOutput << "    constexpr static const uint64_t CRC64 = 0;\n"; // TODO: FIXME
-        typeOutput << std::format("    constexpr static const uint64_t Constructor      = {:016#x};", reflInfo.Properties[0x28]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t CopyConstructor  = {:016#x};", reflInfo.Properties[0x30]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t MoveConstructor  = {:016#x};", reflInfo.Properties[0x38]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t Destructor       = {:016#x};", reflInfo.Properties[0x40]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t CRC64            = {:#016x};\n", checksumEngine_(reflInfo.Name));
+        typeOutput << std::format("    constexpr static const uint64_t Constructor      = {:#016x};", reflInfo.Properties[0x28]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t CopyConstructor  = {:#016x};", reflInfo.Properties[0x30]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t MoveConstructor  = {:#016x};", reflInfo.Properties[0x38]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t Destructor       = {:#016x};", reflInfo.Properties[0x40]) << '\n';
         // 0x48 some sort of copy ctor
         // 0x50 some sort of copy ctor
-        typeOutput << std::format("    constexpr static const uint64_t EqualityComparer = {:016#x};", reflInfo.Properties[0x58]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t GetHashCode      = {:016#x};", reflInfo.Properties[0x60]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t Members          = {:016#x};", reflInfo.Properties[0x70]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t EqualityComparer = {:#016x};", reflInfo.Properties[0x58]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t GetHashCode      = {:#016x};", reflInfo.Properties[0x60]) << '\n';
+        typeOutput << std::format("    constexpr static const uint64_t Members          = {:#016x};", reflInfo.Properties[0x70]) << '\n';
         typeOutput << '\n';
         typeOutput << "};\n";
 
         analysisOutput << typeOutput.rdbuf();
 
         uint64_t fnGet = reflInfo.Properties[0x68];
-    }
-
-        break;
     }
 }
