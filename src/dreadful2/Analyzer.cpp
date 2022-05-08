@@ -2,6 +2,7 @@
 #include "SyntaxTreeVisitor.hpp"
 #include "IDA/API/Function.hpp"
 
+#include <regex>
 #include <type_traits>
 
 #include <hexrays.hpp>
@@ -38,7 +39,8 @@ namespace Utils {
     };
 
     template <typename Q, typename QueryCallback>
-    void ExecuteQuery(Analyzer* analyzer, clang::ASTContext& context, IDA::API::Function const& function, Q&& query, QueryCallback handler)
+    void ExecuteQuery(Analyzer* analyzer, clang::ASTContext& context, 
+        IDA::API::Function const& function, Q&& query, QueryCallback handler)
     {
         MatchCallback callback{ handler, analyzer, function };
 
@@ -105,50 +107,138 @@ namespace Utils {
             executeAction(std::move(toolAction));
         }
     }
+}
 
-    template <typename Handler>
-    auto AnalyzeFunction(IDA::API::Function const& functionInfo, Handler handler, std::function<void(cfunc_t&)> filter /* = nullptr */) {
-        return AnalyzeFunction(functionInfo, std::move(handler), functionInfo.Decompile(filter));
+std::string GeneratePseudocode(IDA::API::Function const& functionInfo, std::function<void(tinfo_t&)> returnTypeTransform) {
+    auto modifyArgCallback = [](tinfo_t& argType) {
+        if (argType.is_struct()) {
+            // If the type is a struct, pretend it's the raw binary data
+            // TODO: What about type alignment?
+            array_type_data_t arrayData(0, argType.get_size());
+            arrayData.elem_type = tinfo_t{ BTF_UINT8 };
+
+            argType.create_array(arrayData);
+        }
+        else if (argType.is_ptr()) {
+            // If it's a pointer to struct or function, change to uint64 
+            // so that we can ignore it. Otherwise don't touch.
+            tinfo_t pointedType = argType.get_pointed_object();
+            if (pointedType.is_struct() || pointedType.is_func())
+                argType = tinfo_t{ BTF_UINT64 };
+        }
+    };
+
+    functionInfo.ModifyType([&](tinfo_t& argType, size_t argIndex) {
+        if (argIndex == std::numeric_limits<size_t>::max()) {
+            returnTypeTransform(argType);
+        } else {
+            modifyArgCallback(argType);
+        }
+    });
+
+    std::stringstream assembledPseudocode;
+    assembledPseudocode << "#include <" IDA_INCLUDE_DIR "/../../../plugins/defs.h>\n";
+
+    for (ea_t reference : functionInfo.GetReferencesFrom(XREF_FAR)) {
+        IDA::API::Function callee{ reference };
+        std::string calleeName = callee.GetName();
+        if (calleeName.empty())
+            continue;
+
+        callee.ModifyType([&](tinfo_t& argType, size_t argIndex) {
+            if (argIndex == std::numeric_limits<size_t>::max())
+                return;
+
+            modifyArgCallback(argType);
+        });
+
+        assembledPseudocode << '\n' << callee.GetReturnType().ToString() << ' ';
+
+        {
+            size_t pos = calleeName.find('(');
+            if (pos != std::string::npos)
+                calleeName = calleeName.substr(0, pos);
+        }
+
+        assembledPseudocode << calleeName;
+        assembledPseudocode << '(';
+        for (size_t i = 0; i < callee.GetArgumentCount(); ++i) {
+            if (i > 0)
+                assembledPseudocode << ", ";
+            assembledPseudocode << callee.GetArgumentType(i).ToString();
+        }
+        assembledPseudocode << "); // 0x" << std::format("{:016X}", reference);
     }
+
+    for (ea_t reference : functionInfo.GetReferencesFrom(XREF_DATA)) {
+        std::string name = get_name(reference).c_str();
+        if (name.empty())
+            continue;
+
+        // Set data type to QWORD
+        apply_tinfo(reference, tinfo_t{ BTF_UINT64 }, TINFO_GUESSED);
+        assembledPseudocode << std::format("\n_QWORD {}; // 0x{:016x}", name,  reference);
+    }
+
+    assembledPseudocode << '\n';
+    functionInfo.Decompile(assembledPseudocode, [](cfunc_t& fn) {
+        // 1. Make all pointer stack elements uint64
+        lvars_t* localVariables = fn.get_lvars();
+        assert(localVariables != nullptr);
+
+        for (size_t i = 0; i < localVariables->size(); ++i) {
+            lvar_t& localVariable = (*localVariables)[i];
+            const tinfo_t& variableType = localVariable.type();
+
+            if (variableType.is_ptr())
+                localVariable.set_final_lvar_type(tinfo_t{ BTF_UINT64 });
+            else if (variableType.is_struct()) {
+                // If it's a struct, set it to an array matching the size of the structure
+                // TODO: type alignment?
+                array_type_data_t arrType(0, variableType.get_size());
+                arrType.elem_type = tinfo_t{ BTF_UINT8 };
+
+                tinfo_t newType;
+                newType.create_array(arrType);
+                localVariable.set_final_lvar_type(newType);
+            }
+        }
+    });
+
+    std::string pseudocode = assembledPseudocode.str();
+
+    auto replaceString = [](std::string& input, std::string_view needle, std::string_view repl) {
+        size_t pos = 0;
+        while ((pos = input.find(needle, pos)) != std::string::npos) {
+            input.replace(pos, needle.length(), repl);
+            pos += repl.length();
+        }
+    };
+
+    replaceString(pseudocode, "`vtable for'", "vtbl_for_");
+    replaceString(pseudocode, "::~", "__dtor_");
+    replaceString(pseudocode, "::", "__");
+
+    // Try **really** hard to get rid of casts
+    // First pass removes casts to incomplete types
+    pseudocode = std::regex_replace(pseudocode,
+        std::regex{ R"(#[0-9]+ \*)" }, "void *");
+    pseudocode = std::regex_replace(pseudocode,
+        std::regex{ R"(\([^)(]+\)([a-z0-9_]+)([,).]))" }, "$1$2");
+
+    return pseudocode;
 }
 
 auto Analyzer::ProcessReflectionObjectConstruction(IDA::API::Function const& functionInfo)
     -> ReflInfo
 {
+    std::string assembledPseudocode = GeneratePseudocode(functionInfo, [](tinfo_t& argType) {
+        argType = tinfo_t{ BTF_VOID };
+    });
+
     return Utils::AnalyzeFunction(functionInfo, [this](clang::ASTContext& context, IDA::API::Function const& functionInfo) -> ReflInfo {
         return this->ProcessReflectionObjectConstruction(context, functionInfo);
-    }, [](cfunc_t& fn) {
-        tinfo_t functionType;
-        bool succeeded = fn.get_func_type(&functionType);
-
-        if (!succeeded)
-            return;
-
-        func_type_data_t funcTypeData;
-        succeeded = functionType.get_func_details(&funcTypeData);
-        if (!succeeded)
-            return;
-
-        // 1. Set return type to void (this is how constructors work)
-        if (!funcTypeData.rettype.is_void())
-            funcTypeData.rettype = tinfo_t{ BTF_VOID };
-
-        // 2. 'Fix' all parameters to void*.
-        //  Note: We **know** from analysis that the call signature is
-        //    void(ReflType*, base::global::CStrId*, Args...)
-        //  where ReflType is the type being reflected (stringized name 
-        //  found in function body)
-        for (size_t i = 0; i < funcTypeData.size(); ++i)
-            funcTypeData[i].type = tinfo_t{ BTF_UINT64 };
-
-        // Apply changes
-        tinfo_t newFunctionType;
-        succeeded = newFunctionType.create_func(funcTypeData);
-        if (!succeeded)
-            return;
-
-        apply_tinfo(fn.entry_ea, newFunctionType, TINFO_DEFINITE);
-    });
+    }, assembledPseudocode);
 }
 
 auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, IDA::API::Function const& functionInfo)

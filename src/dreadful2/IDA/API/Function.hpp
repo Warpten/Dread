@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <sstream>
+#include <unordered_set>
 
 namespace IDA::API {
 	struct Function {
@@ -18,19 +19,19 @@ namespace IDA::API {
 		ea_t GetAddress() const { return _rva; }
 		std::string GetName() const;
 
-		std::string GetDeclaration(bool simplified = false) const;
-
 		Type GetReturnType() const;
 		size_t GetArgumentCount() const;
 		Type GetArgumentType(size_t index) const;
 		std::string GetArgumentName(size_t index) const;
+
+		void ModifyType(std::function<void(tinfo_t&, size_t)> transform) const;
 
 		/// <summary>
 		/// Decompiles the function. Returns the decompiled pseudocode.
 		/// Throws <see cref="DecompilationException" /> if decompilation fails.
 		/// </summary>
 		/// <returns></returns>
-		std::string Decompile( std::function<void(cfunc_t&)> filter = nullptr) const;
+		void Decompile(std::ostream& stream, std::function<void(cfunc_t&)> filter = nullptr) const;
 
 		/// <summary>
 		/// Lists all xrefs to the current function.
@@ -44,7 +45,7 @@ namespace IDA::API {
 		/// </summary>
 		/// <param name="xrefFlags"></param>
 		/// <returns></returns>
-		std::vector<ea_t> GetReferencesFrom(int xrefFlags) const;
+		std::unordered_set<ea_t> GetReferencesFrom(int xrefFlags) const;
 
 		friend bool operator == (Function const& left, Function const& right);
 		friend bool operator != (Function const& left, Function const& right);

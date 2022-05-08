@@ -8,6 +8,8 @@
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/Tooling/Tooling.h>
 
+#include <regex>
+#include <set>
 #include <unordered_set>
 
 namespace IDA::API {
@@ -30,12 +32,28 @@ namespace IDA::API {
 	}
 
 	const auto get_func_type_data = [](ea_t rva) {
+		func_t* function = get_func(rva);
+		assert(function != nullptr);
+
 		tinfo_t functionInfo;
-		bool success = get_tinfo(&functionInfo, rva);
-		assert(success);
+		int resultCode = guess_tinfo(&functionInfo, function->start_ea);
+		switch (resultCode) {
+			case GUESS_FUNC_TRIVIAL:
+				get_tinfo(&functionInfo, function->start_ea);
+				break;
+			case GUESS_FUNC_OK:
+			{
+				bool success = get_tinfo(&functionInfo, function->start_ea);
+				assert(success);
+				break;
+			}
+			case GUESS_FUNC_FAILED:
+				assert(false && "Failed to retrieve function type");
+				break;
+		}
 
 		func_type_data_t functionData;
-		success = functionInfo.get_func_details(&functionData);
+		bool success = functionInfo.get_func_details(&functionData);
 		assert(success);
 
 		return functionData;
@@ -67,43 +85,26 @@ namespace IDA::API {
 		return functionData[index].name.c_str();
 	}
 
-	std::string Function::GetDeclaration(bool simplified /* = false */) const {
-		tinfo_t functionInfo;
-		if (!get_tinfo(&functionInfo, _rva))
-			return "";
+	void Function::ModifyType(std::function<void(tinfo_t&, size_t)> transform) const {
+		func_type_data_t functionData = get_func_type_data(_rva);
 
-		func_type_data_t functionData;
-		functionInfo.get_func_details(&functionData);
+		transform(functionData.rettype, std::numeric_limits<size_t>::max());
 
-		std::stringstream formatStream;
-		auto simplifyTypeIfNeeded = [&](tinfo_t type, auto&& ref) -> std::string {
-			if (simplified) {
-				if (type.is_ptr()) {
-					tinfo_t pointedType = type.get_pointed_object();
-					return ref(pointedType, ref) + "*";
-				}
+		for (size_t i = 0; i < functionData.size(); ++i)
+			transform(functionData[i].type, i);
 
-				// TODO: Simplify structs, or start dumping them in the pseudocode as well ??
-			}
+		tinfo_t newTypeInfo;
+		bool success = newTypeInfo.create_func(functionData);
+		assert(success);
 
-			return type.dstr();
-		};
-
-		formatStream << simplifyTypeIfNeeded(functionData.rettype, simplifyTypeIfNeeded) << ' ' << GetName() << '(';
-		for (size_t i = 0; i < functionData.size(); ++i) {
-			if (i > 0)
-				formatStream << ", ";
-			formatStream << simplifyTypeIfNeeded(functionData[i].type, simplifyTypeIfNeeded) << ' ' << functionData[i].name.c_str() << ", ";
-		}
-		formatStream << ");";
-		return formatStream.str();
+		apply_tinfo(_rva, newTypeInfo, TINFO_GUESSED);
 	}
 
 	std::string Function::GetName() const {
 		return get_name(_rva, GN_DEMANGLED).c_str();
 	}
 
-	std::string Function::Decompile(std::function<void(cfunc_t&)> filter /* = nullptr*/) const {
+	void Function::Decompile(std::ostream& stream, std::function<void(cfunc_t&)> filter /* = nullptr*/) const {
 		func_t* function = get_func(_rva);
 		assert(function != nullptr);
 
@@ -118,64 +119,40 @@ namespace IDA::API {
 		if (filter != nullptr)
 			filter(*functionPointer);
 
-		functionPointer->build_c_tree();
+		// functionPointer->build_c_tree();
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
 
-		std::stringstream assembledPseudocode;
-		assembledPseudocode << "#include <" IDA_INCLUDE_DIR "/../../../plugins/defs.h>\n";
-
-		{
-			std::set<ea_t> dataReferences;
-			std::set<ea_t> codeReferences;
-
-			func_item_iterator_t itr;
-			bool success = itr.set(function);
-			while (success) {
-				ea_t fnItem = itr.current();
-
-				xrefblk_t block;
-				for (bool hasMoreData = block.first_from(fnItem, XREF_ALL); hasMoreData; hasMoreData = block.next_from()) {
-					if (block.iscode)
-						codeReferences.insert(block.to);
-					else {
-						dataReferences.insert(block.to);
-
-						uint64_t value = get_qword(block.to);
-						flags_t flags = get_full_flags(value);
-						if (is_code(flags) && is_func(flags))
-							codeReferences.insert(value);
-					}
-				}
-
-				success = itr.next_addr();
-			}
-
-			for (ea_t dataReference : dataReferences) {
-				std::string name = get_name(dataReference).c_str();
-				if (name.empty())
-					continue;
-
-				assembledPseudocode << "\n_QWORD " << name << ';';
-			}
-
-			for (ea_t codeReference : codeReferences) {
-				std::string name = get_name(codeReference).c_str();
-				if (name.empty())
-					continue;
-
-				assembledPseudocode << "\n" << IDA::API::Function{ codeReference }.GetDeclaration(true);
-			}
-		}
-
-		assembledPseudocode << "\n\n";
+		// assembledPseudocode << "#include <" IDA_INCLUDE_DIR "/../../../plugins/defs.h>\n";
 
 		for (simpleline_t line : pseudocodeLines) {
 			tag_remove(&line.line, 0);
 
-			assembledPseudocode << line.line.c_str() << '\n';
+			stream << line.line.c_str() << '\n';
 		}
 		
-		return assembledPseudocode.str();
+		/*std::string pseudocode = assembledPseudocode.str();
+
+		auto replaceString = [](std::string& input, std::string_view needle, std::string_view repl) {
+			size_t pos = 0;
+			while ((pos = input.find(needle, pos)) != std::string::npos) {
+				input.replace(pos, needle.length(), repl);
+				pos += repl.length();
+			}
+		};
+
+		// This seems stupid but ordering matters because of bitwise XOR
+		replaceString(pseudocode, "`vtable for'", "vtbl_for_");
+		replaceString(pseudocode, "::~", "__dtor_");
+		replaceString(pseudocode, "::", "__");
+		// IDA displays invalid types (deleted types) by their slot ID.
+		// Try to recover these; if it's a pointer, replace with void*
+		std::regex_replace(pseudocode.begin(), pseudocode.begin(), pseudocode.end(),
+			std::regex{R"(#[0-9]+ \*)"}, "void *");
+		// Try **really** hard to get rid of casts
+		std::regex_replace(pseudocode.begin(), pseudocode.begin(), pseudocode.end(),
+			std::regex{ R"(\([^)(]+\)([a-z0-9_]+)([,).]))" }, "$1$2");
+		
+		return pseudocode;*/
 	}
 
 	std::vector<ea_t> Function::GetReferencesTo(int xrefFlags) const {
@@ -189,18 +166,39 @@ namespace IDA::API {
 		return crossReferences;
 	}
 
-	std::vector<ea_t> Function::GetReferencesFrom(int xrefFlags) const {
-		std::vector<ea_t> crossReferences;
+	std::unordered_set<ea_t> Function::GetReferencesFrom(int xrefFlags) const {
+		func_t* function = get_func(_rva);
+		assert(function != nullptr);
 
-		func_t* fn = get_func(_rva);
+		std::unordered_set<ea_t> crossReferences;
+
 		func_item_iterator_t itr;
-		bool success = itr.set(fn);
+		bool success = itr.set(function);
 		while (success) {
 			ea_t fnItem = itr.current();
 
 			xrefblk_t block;
-			for (bool hasMoreData = block.first_from(fnItem, xrefFlags); hasMoreData; hasMoreData = block.next_from())
-				crossReferences.push_back(block.to);
+			for (bool hasMoreData = block.first_from(fnItem, XREF_ALL); hasMoreData; hasMoreData = block.next_from()) {
+				if (xrefFlags == XREF_ALL || (xrefFlags == XREF_FAR && block.iscode && !function->contains(block.to)))
+					crossReferences.insert(block.to);
+
+				if (!block.iscode) {
+					// Read value at offset, if it's a pointer to code, store the reference
+					uint64_t value = get_qword(block.to);
+					flags_t flags = get_full_flags(value);
+					if (is_code(flags) && is_func(flags)) {
+						if (xrefFlags != XREF_DATA) {
+							// Don't store xrefs to our own code
+							if (!function->contains(value))
+								crossReferences.insert(value);
+						}
+					}
+					else {
+						if (xrefFlags == XREF_DATA)
+							crossReferences.insert(value);
+					}
+				}
+			}
 
 			success = itr.next_code();
 		}

@@ -155,10 +155,11 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
     IDA::API::Message("Searching for references to {:#016x}.\n", versionInfo->Properties.CRC64);
     IDA::API::Function checksumFunction(versionInfo->Properties.CRC64);
 
+    // TODO: Force CRC64 to uint64 (*)(const char*, size_t)
     std::unordered_map<IDA::API::Function, size_t> callers;
 
     for (ea_t callerRVA : checksumFunction.GetReferencesTo(XREF_FAR)) {
-        callerRVA = 0x000000710000D228;
+        callerRVA = 0x000000710000D228uLL;
 
         auto [itr, success] = callers.try_emplace(IDA::API::Function{ callerRVA }, 1);
         if (!success)
@@ -189,20 +190,34 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         IDA::API::Message("Found construction of '{}' at {:#08x}.\n", reflInfo.Name, reflCtor.GetAddress());
 
         std::stringstream typeOutput;
-        typeOutput << "struct Metadata<" << reflInfo.Name << "> {\n";
-        typeOutput << "    constexpr static const std::string_view Name = " << reflInfo.Name << ";\n";
-        typeOutput << std::format("    constexpr static const uint64_t CRC64            = {:#016x};\n", checksumEngine_(reflInfo.Name));
-        typeOutput << std::format("    constexpr static const uint64_t Constructor      = {:#016x};", reflInfo.Properties[0x28]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t CopyConstructor  = {:#016x};", reflInfo.Properties[0x30]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t MoveConstructor  = {:#016x};", reflInfo.Properties[0x38]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t Destructor       = {:#016x};", reflInfo.Properties[0x40]) << '\n';
-        // 0x48 some sort of copy ctor
-        // 0x50 some sort of copy ctor
-        typeOutput << std::format("    constexpr static const uint64_t EqualityComparer = {:#016x};", reflInfo.Properties[0x58]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t GetHashCode      = {:#016x};", reflInfo.Properties[0x60]) << '\n';
-        typeOutput << std::format("    constexpr static const uint64_t Members          = {:#016x};", reflInfo.Properties[0x70]) << '\n';
-        typeOutput << '\n';
-        typeOutput << "};\n";
+
+        constexpr static const std::string_view MetadataTemplate = R"(
+template <> struct Metadata<{0}> {
+    constexpr static const std::string_view Name = {0};
+    constexpr static const uint64_t CRC64 = {1:#016x};
+
+    constexpr static const uint64_t Constructor      = {2:#016x};
+    constexpr static const uint64_t CopyConstructor  = {3:#016x};
+    constexpr static const uint64_t MoveConstructor  = {4:#016x};
+    constexpr static const uint64_t Destructor       = {5:#016x};
+    // 0x48 Some sort of copy ctor?
+    // 0x50 Some sort of copy ctor?
+    constexpr static const uint64_t EqualityComparer = {6:#016x};
+    constexpr static const uint64_t GetHashCode      = {7:#016x};
+    constexpr static const uint64_t EnumerateMembers = {8:#016x};
+};
+)";
+
+        typeOutput << std::format(MetadataTemplate, reflInfo.Name, checksumEngine_(reflInfo.Name),
+            reflInfo.Properties[0x28],
+            reflInfo.Properties[0x30],
+            reflInfo.Properties[0x38],
+            reflInfo.Properties[0x40],
+            // reflInfo.Properties[0x48],
+            // reflInfo.Properties[0x50],
+            reflInfo.Properties[0x58],
+            reflInfo.Properties[0x60],
+            reflInfo.Properties[0x70]);
 
         analysisOutput << typeOutput.rdbuf();
 
