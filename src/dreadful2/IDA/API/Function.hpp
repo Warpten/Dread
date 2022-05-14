@@ -19,6 +19,8 @@ namespace IDA::API {
 		ea_t GetAddress() const { return _rva; }
 		std::string GetName() const;
 
+		std::string ToString() const;
+
 		Type GetReturnType() const;
 		size_t GetArgumentCount() const;
 		Type GetArgumentType(size_t index) const;

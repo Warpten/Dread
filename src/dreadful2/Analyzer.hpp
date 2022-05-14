@@ -16,6 +16,8 @@ namespace clang {
 struct Analyzer final {
     struct ReflInfo {
         std::string Name;
+
+        uint64_t Self;
         std::unordered_map<uint64_t /* offset */, uint64_t /* value */> Properties;
     };
 

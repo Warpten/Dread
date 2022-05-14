@@ -31,26 +31,26 @@ namespace IDA::API {
 		_rva = function->start_ea;
 	}
 
-	const auto get_func_type_data = [](ea_t rva) {
+	const auto get_tinfo_from_cfunc_t = [](ea_t rva) {
 		func_t* function = get_func(rva);
 		assert(function != nullptr);
 
-		tinfo_t functionInfo;
-		int resultCode = guess_tinfo(&functionInfo, function->start_ea);
-		switch (resultCode) {
-			case GUESS_FUNC_TRIVIAL:
-				get_tinfo(&functionInfo, function->start_ea);
-				break;
-			case GUESS_FUNC_OK:
-			{
-				bool success = get_tinfo(&functionInfo, function->start_ea);
-				assert(success);
-				break;
-			}
-			case GUESS_FUNC_FAILED:
-				assert(false && "Failed to retrieve function type");
-				break;
-		}
+		hexrays_failure_t failure;
+		cfuncptr_t functionPointer = decompile(function, &failure,
+			DECOMP_NO_WAIT | DECOMP_NO_CACHE | DECOMP_NO_XREFS | DECOMP_NO_FRAME);
+		if (failure.code != merror_t::MERR_OK)
+			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
+
+		tinfo_t tif;
+		bool success = functionPointer->get_func_type(&tif);
+		if (!success)
+			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
+
+		return tif;
+	};
+
+	const auto get_func_type_data = [](ea_t rva) {
+		tinfo_t functionInfo = get_tinfo_from_cfunc_t(rva);
 
 		func_type_data_t functionData;
 		bool success = functionInfo.get_func_details(&functionData);
@@ -85,7 +85,19 @@ namespace IDA::API {
 		return functionData[index].name.c_str();
 	}
 
+	std::string Function::ToString() const {
+		func_type_data_t functionData = get_func_type_data(_rva);
+
+		std::stringstream ss;
+		ss << GetReturnType().ToString() << ' ' << GetName() << ' {';
+		for (size_t i = 0; i < GetArgumentCount(); ++i)
+			ss << ' ' << GetArgumentType(i).ToString();
+		ss << " }";
+		return ss.str();
+	}
+
 	void Function::ModifyType(std::function<void(tinfo_t&, size_t)> transform) const {
+
 		func_type_data_t functionData = get_func_type_data(_rva);
 
 		transform(functionData.rettype, std::numeric_limits<size_t>::max());
@@ -96,12 +108,32 @@ namespace IDA::API {
 		tinfo_t newTypeInfo;
 		bool success = newTypeInfo.create_func(functionData);
 		assert(success);
-
-		apply_tinfo(_rva, newTypeInfo, TINFO_GUESSED);
+		
+		// Goes completely to shit if TINFO_DEFINITE ??
+		apply_tinfo(_rva, newTypeInfo, TINFO_DEFINITE);
 	}
 
 	std::string Function::GetName() const {
-		return get_name(_rva, GN_DEMANGLED).c_str();
+		std::string name = get_name(_rva, GN_DEMANGLED | GN_SHORT).c_str();
+		auto replaceString = [](std::string& input, std::string_view needle, std::string_view repl) {
+			size_t pos = 0;
+			while ((pos = input.find(needle, pos)) != std::string::npos) {
+				input.replace(pos, needle.length(), repl);
+				pos += repl.length();
+			}
+		};
+
+		replaceString(name, "::", "__");
+
+		size_t position = name.find('(');
+		if (position != std::string::npos)
+			return name.substr(0, position);
+
+		// Why does HexRays do this?
+		if (name[0] == '_')
+			name = name.substr(1);
+
+		return name;
 	}
 
 	void Function::Decompile(std::ostream& stream, std::function<void(cfunc_t&)> filter /* = nullptr*/) const {
@@ -119,7 +151,8 @@ namespace IDA::API {
 		if (filter != nullptr)
 			filter(*functionPointer);
 
-		// functionPointer->build_c_tree();
+		functionPointer->build_c_tree();
+		functionPointer->refresh_func_ctext();
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
 
 		// assembledPseudocode << "#include <" IDA_INCLUDE_DIR "/../../../plugins/defs.h>\n";
@@ -129,30 +162,6 @@ namespace IDA::API {
 
 			stream << line.line.c_str() << '\n';
 		}
-		
-		/*std::string pseudocode = assembledPseudocode.str();
-
-		auto replaceString = [](std::string& input, std::string_view needle, std::string_view repl) {
-			size_t pos = 0;
-			while ((pos = input.find(needle, pos)) != std::string::npos) {
-				input.replace(pos, needle.length(), repl);
-				pos += repl.length();
-			}
-		};
-
-		// This seems stupid but ordering matters because of bitwise XOR
-		replaceString(pseudocode, "`vtable for'", "vtbl_for_");
-		replaceString(pseudocode, "::~", "__dtor_");
-		replaceString(pseudocode, "::", "__");
-		// IDA displays invalid types (deleted types) by their slot ID.
-		// Try to recover these; if it's a pointer, replace with void*
-		std::regex_replace(pseudocode.begin(), pseudocode.begin(), pseudocode.end(),
-			std::regex{R"(#[0-9]+ \*)"}, "void *");
-		// Try **really** hard to get rid of casts
-		std::regex_replace(pseudocode.begin(), pseudocode.begin(), pseudocode.end(),
-			std::regex{ R"(\([^)(]+\)([a-z0-9_]+)([,).]))" }, "$1$2");
-		
-		return pseudocode;*/
 	}
 
 	std::vector<ea_t> Function::GetReferencesTo(int xrefFlags) const {
@@ -182,8 +191,9 @@ namespace IDA::API {
 				if (xrefFlags == XREF_ALL || (xrefFlags == XREF_FAR && block.iscode && !function->contains(block.to)))
 					crossReferences.insert(block.to);
 
-				if (!block.iscode) {
+				{
 					// Read value at offset, if it's a pointer to code, store the reference
+					// Same if it's data and we want that
 					uint64_t value = get_qword(block.to);
 					flags_t flags = get_full_flags(value);
 					if (is_code(flags) && is_func(flags)) {
@@ -194,7 +204,7 @@ namespace IDA::API {
 						}
 					}
 					else {
-						if (xrefFlags == XREF_DATA)
+						if (xrefFlags != XREF_FAR)
 							crossReferences.insert(value);
 					}
 				}

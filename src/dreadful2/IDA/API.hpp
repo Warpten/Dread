@@ -15,7 +15,7 @@ namespace IDA::API {
 	/// <param name="...args">The arguments to format</param>
 	template <typename... Args>
 	void Message(std::string_view format, Args&&... args) {
-		msg(std::format(format, std::forward<Args&&>(args)...).data());
+		msg(std::vformat(format, std::make_format_args(std::forward<Args&&>(args)...)).data());
 	}
 
 	struct MessageBoxLevel {

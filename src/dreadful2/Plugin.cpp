@@ -188,36 +188,42 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         // analyzer.ProcessObject(IDA::API::Function{ callers.front() });
 
         IDA::API::Message("Found construction of '{}' at {:#08x}.\n", reflInfo.Name, reflCtor.GetAddress());
+        return;
 
         std::stringstream typeOutput;
 
         constexpr static const std::string_view MetadataTemplate = R"(
 template <> struct Metadata<{0}> {
-    constexpr static const std::string_view Name = {0};
-    constexpr static const uint64_t CRC64 = {1:#016x};
+    constexpr static const std::string_view Name = "{0}";
+    constexpr static const uint64_t CRC64 = 0x{1:016X};
 
-    constexpr static const uint64_t Constructor      = {2:#016x};
-    constexpr static const uint64_t CopyConstructor  = {3:#016x};
-    constexpr static const uint64_t MoveConstructor  = {4:#016x};
-    constexpr static const uint64_t Destructor       = {5:#016x};
+    constexpr static const uint64_t Constructor      = 0x{2:016X};
+    constexpr static const uint64_t CopyConstructor  = 0x{3:016X};
+    constexpr static const uint64_t MoveConstructor  = 0x{4:016X};
+    constexpr static const uint64_t Destructor       = 0x{5:016X};
     // 0x48 Some sort of copy ctor?
     // 0x50 Some sort of copy ctor?
-    constexpr static const uint64_t EqualityComparer = {6:#016x};
-    constexpr static const uint64_t GetHashCode      = {7:#016x};
-    constexpr static const uint64_t EnumerateMembers = {8:#016x};
+    constexpr static const uint64_t EqualityComparer = 0x{6:016X};
+    constexpr static const uint64_t GetHashCode      = 0x{7:016X};
+    constexpr static const uint64_t EnumerateMembers = 0x{8:016X};
 };
 )";
 
-        typeOutput << std::format(MetadataTemplate, reflInfo.Name, checksumEngine_(reflInfo.Name),
-            reflInfo.Properties[0x28],
-            reflInfo.Properties[0x30],
-            reflInfo.Properties[0x38],
-            reflInfo.Properties[0x40],
-            // reflInfo.Properties[0x48],
-            // reflInfo.Properties[0x50],
-            reflInfo.Properties[0x58],
-            reflInfo.Properties[0x60],
-            reflInfo.Properties[0x70]);
+        typeOutput << std::vformat(MetadataTemplate,
+            std::make_format_args(
+                reflInfo.Name,
+                checksumEngine_(reflInfo.Name),
+                reflInfo.Properties[0x28],
+                reflInfo.Properties[0x30],
+                reflInfo.Properties[0x38],
+                reflInfo.Properties[0x40],
+                // reflInfo.Properties[0x48],
+                // reflInfo.Properties[0x50],
+                reflInfo.Properties[0x58],
+                reflInfo.Properties[0x60],
+                reflInfo.Properties[0x70]
+            )
+        );
 
         analysisOutput << typeOutput.rdbuf();
 
