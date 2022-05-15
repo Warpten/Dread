@@ -197,6 +197,7 @@ template <> struct Metadata<{0}> {
     constexpr static const std::string_view Name = "{0}";
     constexpr static const uint64_t CRC64 = 0x{1:016X};
 
+    // 0x20 Unknown function pointer
     constexpr static const uint64_t Constructor      = 0x{2:016X};
     constexpr static const uint64_t CopyConstructor  = 0x{3:016X};
     constexpr static const uint64_t MoveConstructor  = 0x{4:016X};
@@ -213,6 +214,7 @@ template <> struct Metadata<{0}> {
             std::make_format_args(
                 reflInfo.Name,
                 checksumEngine_(reflInfo.Name),
+                // reflInfo.Properties[0x20],
                 reflInfo.Properties[0x28],
                 reflInfo.Properties[0x30],
                 reflInfo.Properties[0x38],

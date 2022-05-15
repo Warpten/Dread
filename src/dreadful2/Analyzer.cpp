@@ -327,9 +327,11 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
 
 	auto extractOffset = [](clang::AnnotateAttr* attribute) -> uint64_t {
 		llvm::StringRef annotation{ attribute->getAnnotation() };
+        if (!annotation.startswith("0x"))
+            return 0uLL;
 
 		uint64_t offsetValue = 0uLL;
-		auto [ptr, ec] = std::from_chars(annotation.begin(), annotation.end(), offsetValue);
+		auto [ptr, ec] = std::from_chars(annotation.data() + 2, annotation.data() + annotation.size(), offsetValue, 16);
 		if (ec != std::errc{})
 			return 0uLL;
 
@@ -512,6 +514,9 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                 propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 64;
             }
 
+            propertyOffset *= sizeof(uint64_t); // We use offsets in bytes. No particular reason except it makes
+                                                // development of this plugin a bit easier.
+
             if (const clang::IntegerLiteral* integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
                 // Get the value, limited to the size of the target type if it exists.
                 // If it doesn't, default to uint64.
@@ -525,7 +530,7 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                         uint64_t loPart = integerLit->getValue().extractBitsAsZExtValue(64, 0);
                         uint64_t hiPart = integerLit->getValue().extractBitsAsZExtValue(64, 64);
                         reflInfo.Properties[propertyOffset] = loPart;
-                        reflInfo.Properties[propertyOffset + 1] = hiPart;
+                        reflInfo.Properties[propertyOffset + sizeof(uint64_t)] = hiPart;
 
                         return;
                     }
