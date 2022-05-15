@@ -508,7 +508,8 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
             uint64_t propertyOffset = offset->getValue().getLimitedValue(std::numeric_limits<uint64_t>::max());
             if (castDeclRef != nullptr) {
                 // clang::TypeInfo stores size and alignment in bits.
-                propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 8;
+                // Offset expressed as increments of 64 bits.
+                propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 64;
             }
 
             if (const clang::IntegerLiteral* integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
@@ -535,7 +536,15 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                 reflInfo.Properties[propertyOffset] = integerLit->getValue().getLimitedValue(maxValue);
             }
             else if (auto valueRef = clang::dyn_cast<clang::DeclRefExpr>(value)) {
-                // TODO
+                auto value = valueRef->getDecl();
+                if (auto functionDecl = clang::dyn_cast<clang::FunctionDecl>(value)) {
+                    auto annotationAttribute = functionDecl->getAttr<clang::AnnotateAttr>();
+                    if (annotationAttribute == nullptr)
+                        return;
+
+                    reflInfo.Properties[propertyOffset] = extractOffset(annotationAttribute);
+                }
+                // Anything else?
             }
         }
     );
