@@ -180,7 +180,6 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
 
 		// Abuse the clang::annotate attribute to store offsets properly
 		assembledPseudocode << '\n' << std::format(R"([[clang::annotate("0x{:016x}")]] )", reference);
-#if 1
 		assembledPseudocode << "AnyType " << calleeName << '(';
         for (size_t i = 0; i < callee.GetArgumentCount(); ++i) {
             if (i > 0)
@@ -189,36 +188,12 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
             assembledPseudocode << "AnyType";
         }
         assembledPseudocode << ");";
-#else
-        callee.ModifyType([&](tinfo_t& argType, size_t argIndex) {
-            if (argIndex == std::numeric_limits<size_t>::max()) {
-                // Set to uint64 if the return type is a pointer (aliasing)
-                if (argType.is_ptr()) {
-                    argType = tinfo_t{ BTF_UINT64 };
-                }
-            }
-
-            std::invoke(modifyArgCallback, std::ref(argType));
-        });
-
-        // Pretend every function returns a void*; doesn't matter for our purposes, decompilation is already done
-        assembledPseudocode << ' ' << callee.GetReturnType().ToString() << ' ';
-
-        assembledPseudocode << calleeName << '(';
-        for (size_t i = 0; i < callee.GetArgumentCount(); ++i) {
-            if (i > 0)
-                assembledPseudocode << ", ";
-
-            assembledPseudocode << callee.GetArgumentType(i).ToString();
-        }
-        assembledPseudocode << ");";
-#endif
     }
 
     assembledPseudocode << '\n';
 
     for (ea_t reference : functionInfo.GetReferencesFrom(XREF_DATA)) {
-        std::string name = get_name(reference).c_str();
+        std::string name = get_name(reference, GN_DEMANGLED | GN_SHORT).c_str();
         if (name.empty())
             continue;
 

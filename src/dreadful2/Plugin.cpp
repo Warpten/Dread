@@ -228,22 +228,38 @@ BUTTON CANCEL Cancel
             continue;
         }
 
-        analysisOutput << "template <> struct Metadata<" << reflInfo.Name << "> {\n"
-            "    constexpr static const std::string_view Name = \"" << reflInfo.Name << "\";\n"
-            "    constexpr static const uint64_t CRC64 = \"" << checksumEngine_(reflInfo.Name) << "\";\n"
-            "\n";
-        appendProperty("Instance", reflInfo.Self);
-        analysisOutput << '\n';
-        // 0x20
-        appendProperty("Constructor", reflInfo.Properties[0x28]);
-        appendProperty("CopyConstructor", reflInfo.Properties[0x30]);
-        appendProperty("MoveConstructor", reflInfo.Properties[0x38]);
-        appendProperty("Destructor", reflInfo.Properties[0x40]);
-        // 0x48
-        // 0x50
-        appendProperty("EqualityComparer", reflInfo.Properties[0x58]);
-        appendProperty("GetHashCode", reflInfo.Properties[0x60]);
-        appendProperty("EnumerateMembers", reflInfo.Properties[0x70]);
-        analysisOutput << "};\n\n";
+		constexpr static const std::string_view MetadataTemplate = R"(
+template <> struct Metadata<{}> {{
+    constexpr static const std::string_view Name = "{}";
+    constexpr static const uint64_t CRC64 = {:#016x};
+
+    constexpr static const uint64_t Instance = {:#016x};
+
+    constexpr static const uint64_t Constructor      = {:#016x};
+    constexpr static const uint64_t CopyConstructor  = {:#016x};
+    constexpr static const uint64_t MoveConstructor  = {:#016x};
+    constexpr static const uint64_t Destructor       = {:#016x};
+    // 0x48
+    // 0x50
+    constexpr static const uint64_t EqualityComparer = {:#016x};
+    constexpr static const uint64_t GetHashCode      = {:#016x};
+    constexpr static const uint64_t EnumerateMembers = {:#016x};
+}};)";
+
+        analysisOutput << std::format(MetadataTemplate,
+            reflInfo.Name,
+            reflInfo.Name,
+            checksumEngine_(reflInfo.Name),
+            reflInfo.Self,
+            reflInfo.Properties[0x28],
+            reflInfo.Properties[0x30],
+            reflInfo.Properties[0x38],
+            reflInfo.Properties[0x40],
+            // reflInfo.Properties[0x48],
+            // reflInfo.Properties[0x50],
+            reflInfo.Properties[0x58],
+            reflInfo.Properties[0x60],
+            reflInfo.Properties[0x70]
+        );
     }
 }
