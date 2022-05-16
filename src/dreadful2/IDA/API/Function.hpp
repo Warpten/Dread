@@ -16,6 +16,8 @@ namespace IDA::API {
 
 		explicit Function(ea_t rva);
 
+		bool IsThunk() const;
+
 		ea_t GetAddress() const { return _rva; }
 		std::string GetName() const;
 

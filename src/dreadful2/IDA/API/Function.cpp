@@ -31,6 +31,13 @@ namespace IDA::API {
 		_rva = function->start_ea;
 	}
 
+	bool Function::IsThunk() const {
+		func_t* function = get_func(_rva);
+		assert(function != nullptr);
+
+		return (function->flags & FUNC_THUNK) != 0;
+	}
+
 	const auto get_tinfo_from_cfunc_t = [](ea_t rva) {
 		func_t* function = get_func(rva);
 		assert(function != nullptr);

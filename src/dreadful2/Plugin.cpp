@@ -159,13 +159,13 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
     std::unordered_map<IDA::API::Function, size_t> callers;
 
     for (ea_t callerRVA : checksumFunction.GetReferencesTo(XREF_FAR)) {
-        callerRVA = 0x000000710000D228uLL;
+        // callerRVA = 0x000000710000D228uLL;
 
         auto [itr, success] = callers.try_emplace(IDA::API::Function{ callerRVA }, 1);
         if (!success)
             ++itr->second;
 
-        break;
+       // break;
     }
 
     IDA::API::Message("Found {} references to CRC64.\n", callers.size());
@@ -188,11 +188,23 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         // analyzer.ProcessObject(IDA::API::Function{ callers.front() });
 
         IDA::API::Message("Found construction of '{}' at {:#08x}.\n", reflInfo.Name, reflCtor.GetAddress());
-        return;
 
-        std::stringstream typeOutput;
+        uint64_t fnGet = reflInfo.Properties[0x68];
+        if (fnGet != 0uLL && reflInfo.Self == 0x0uLL) {
+            // Don't bother trying to get refl object if we have it already
+            IDA::API::Function getReflInfo{ fnGet };
+            while (getReflInfo.IsThunk()) {
+                std::unordered_set<ea_t> calledFunctions = getReflInfo.GetReferencesFrom(XREF_FAR);
+                assert(calledFunctions.size() == 1);
 
-        constexpr static const std::string_view MetadataTemplate = R"(
+                getReflInfo = IDA::API::Function{ *calledFunctions.begin() };
+            }
+
+            analyzer.ProcessObject(getReflInfo, reflInfo);
+        }
+
+/*
+		constexpr static const std::string_view MetadataTemplate = R"(
 template <> struct Metadata<{0}> {
     constexpr static const std::string_view Name = "{0}";
     constexpr static const uint64_t CRC64 = 0x{1:016X};
@@ -210,25 +222,22 @@ template <> struct Metadata<{0}> {
 };
 )";
 
-        typeOutput << std::vformat(MetadataTemplate,
-            std::make_format_args(
-                reflInfo.Name,
-                checksumEngine_(reflInfo.Name),
-                // reflInfo.Properties[0x20],
-                reflInfo.Properties[0x28],
-                reflInfo.Properties[0x30],
-                reflInfo.Properties[0x38],
-                reflInfo.Properties[0x40],
-                // reflInfo.Properties[0x48],
-                // reflInfo.Properties[0x50],
-                reflInfo.Properties[0x58],
-                reflInfo.Properties[0x60],
-                reflInfo.Properties[0x70]
-            )
-        );
-
-        analysisOutput << typeOutput.rdbuf();
-
-        uint64_t fnGet = reflInfo.Properties[0x68];
+        analysisOutput << std::vformat(MetadataTemplate,
+			std::make_format_args(
+				reflInfo.Name,
+				checksumEngine_(reflInfo.Name),
+				// reflInfo.Properties[0x20],
+				reflInfo.Properties[0x28],
+				reflInfo.Properties[0x30],
+				reflInfo.Properties[0x38],
+				reflInfo.Properties[0x40],
+				// reflInfo.Properties[0x48],
+				// reflInfo.Properties[0x50],
+				reflInfo.Properties[0x58],
+				reflInfo.Properties[0x60],
+				reflInfo.Properties[0x70]
+			)
+		);
+        */
     }
 }

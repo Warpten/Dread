@@ -20,31 +20,25 @@ namespace matchers = clang::ast_matchers;
 const matchers::internal::VariadicDynCastAllOfMatcher<clang::Expr, clang::RecoveryExpr> recoveryExpr;
 
 namespace Utils {
+    /// <summary>
+    /// Associates a query with a query callback.
+    /// Construction registers the query for the finder.
+    /// </summary>
     template <typename QueryCallback>
-    struct MatchCallback final : matchers::MatchFinder::MatchCallback {
-        explicit MatchCallback(QueryCallback handler, Analyzer* analyzer)
-            : _handler(handler), _analyzer(analyzer)
-        { }
-
-        void run(const matchers::MatchFinder::MatchResult& result) override {
-            std::invoke(_handler, result);
+	struct MatchQuery final : matchers::MatchFinder::MatchCallback {
+        template <typename Query>
+		MatchQuery(matchers::MatchFinder& finder, Query&& query, QueryCallback handler) noexcept
+			: _handler(handler) {
+            finder.addMatcher(query, this);
         }
 
-    private:
-        QueryCallback _handler;
-        Analyzer* _analyzer;
-    };
+		void run(const matchers::MatchFinder::MatchResult& result) override {
+			std::invoke(_handler, result);
+		}
 
-    template <typename Q, typename QueryCallback>
-    void ExecuteQuery(Analyzer* analyzer, clang::ASTContext& context, 
-        IDA::API::Function const& function, Q&& query, QueryCallback handler)
-    {
-        MatchCallback callback{ handler, analyzer };
-
-        matchers::MatchFinder finder;
-        finder.addMatcher(query, &callback);
-        finder.matchAST(context);
-    }
+	private:
+		QueryCallback _handler;
+	};
 
     template <typename Handler>
     auto AnalyzeFunction(IDA::API::Function const& functionInfo, Handler handler, std::string_view sourceCode)
@@ -67,8 +61,14 @@ namespace Utils {
 
 		using return_type = std::invoke_result_t<Handler, clang::ASTContext&, IDA::API::Function const&>;
 
-        if (astUnit == nullptr)
-            return return_type{};
+        if constexpr (!std::is_void_v<return_type>) {
+            if (astUnit == nullptr)
+                return return_type{};
+        }
+        else {
+            if (astUnit == nullptr)
+                return;
+        }
 
         return handler(astUnit->getASTContext(), functionInfo);
     }
@@ -305,6 +305,10 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
     // This is stupid ....
     replaceString(pseudocode, "clang__annotate", "clang::annotate");
 
+    // This is EVEN more stupid - HexRays won't always insert casts...
+    pseudocode = std::regex_replace(pseudocode,
+        std::regex{ R"(\) = (&?[^0-9~][^;]+);)" }, ") = (AnyType)($1);");
+
     return pseudocode;
 }
 
@@ -323,8 +327,6 @@ auto Analyzer::ProcessReflectionObjectConstruction(IDA::API::Function const& fun
 auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, IDA::API::Function const& functionInfo)
     -> ReflInfo
 {
-    ReflInfo reflInfo;
-
 	auto extractOffset = [](clang::AnnotateAttr* attribute) -> uint64_t {
 		llvm::StringRef annotation{ attribute->getAnnotation() };
         if (!annotation.startswith("0x"))
@@ -338,70 +340,53 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
 		return offsetValue;
 	};
 
-    Utils::ExecuteQuery(this, context, functionInfo, matchers::callExpr(
-        matchers::forFunction(matchers::hasName(functionInfo.GetName())),
-        matchers::hasArgument(0, 
-            matchers::hasDescendant(
-                matchers::stringLiteral().bind("stringLiteral")
+	ReflInfo reflInfo;
+    // Scope query segment to limit results to the function being decompiled
+    //   Probably overkill, but just in case plugins/defs.h does wonky stuff.
+	auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
+    matchers::MatchFinder matchFinder;
+
+    Utils::MatchQuery reflectedNameQuery { 
+        matchFinder,
+        matchers::callExpr(
+            scopeQuery,
+            matchers::hasArgument(0, matchers::hasDescendant(matchers::stringLiteral().bind("stringLiteral"))),
+            matchers::hasArgument(1, matchers::hasDescendant(matchers::integerLiteral().bind("integerLiteral")))
+        ),
+        [&](const matchers::MatchFinder::MatchResult& result) {
+            auto stringLiteral = result.Nodes.getNodeAs<clang::StringLiteral>("stringLiteral");
+            auto integerLiteral = result.Nodes.getNodeAs<clang::IntegerLiteral>("integerLiteral");
+
+            if (stringLiteral->getByteLength() != integerLiteral->getValue())
+                return;
+
+            reflInfo.Name = stringLiteral->getBytes();
+
+            // Small fixup, needed because of the string replacements we do on the pseudocode...
+            for (char& character : reflInfo.Name)
+                if (character == '_')
+                    character = ':';
+        }
+    };
+
+    //< Handle vtable assignment.
+    Utils::MatchQuery vtableAssigmentQuery{
+        matchFinder,
+        matchers::binaryOperator(
+            scopeQuery,
+            matchers::hasOperatorName("="),
+            matchers::hasOperands(
+                matchers::declRefExpr().bind("this"),
+                matchers::cStyleCastExpr(matchers::hasSourceExpression(
+                    matchers::unaryOperator(matchers::declRefExpr().bind("declRef"))
+                ))
             )
         ),
-        matchers::hasArgument(1, 
-            matchers::hasDescendant(
-                matchers::integerLiteral().bind("integerLiteral")
-            )
-        )
-    ), [&](const matchers::MatchFinder::MatchResult& result) {
-        auto stringLiteral = result.Nodes.getNodeAs<clang::StringLiteral>("stringLiteral");
-        auto integerLiteral = result.Nodes.getNodeAs<clang::IntegerLiteral>("integerLiteral");
-
-        if (stringLiteral == nullptr || integerLiteral == nullptr)
-            return;
-
-        assert(stringLiteral->getByteLength() == integerLiteral->getValue());
-        reflInfo.Name = stringLiteral->getBytes();
-    });
-
-    /**
-     * // Vtable assignment
-     * stru_7101CF38F8 = (unsigned __int64)&vtable_for_base__reflection__CType;
-     *  `-BinaryOperator 0x2079b211110 <line:69:5, col:42> 'unsigned long long' lvalue '='
-     * 	|-DeclRefExpr 0x2079b211078 <col:5> 'unsigned long long' lvalue Var 0x2079b20ffa8 'stru_7101CF38F8' 'unsigned long long'
-     * 	`-CStyleCastExpr 0x2079b2110e8 <col:23, col:42> 'unsigned long long' <PointerToIntegral>
-     * 	  `-UnaryOperator 0x2079b2110b8 <col:41, col:42> 'unsigned long long *' prefix '&' cannot overflow
-     * 		`-DeclRefExpr 0x2079b211098 <col:42> 'unsigned long long' lvalue Var 0x2079b209060 'vtable_for_base__reflection__CType' 'unsigned long long'
-     * 
-     * This also works for assignment to a1 (instance arg); LHS operator will be a DeclRefExpr to a ParmVarDecl, not a VarDecl.
-     * Incidentally that means that there won't be [[clang::annotate]] in the decl referenced, meaning we automatically know if
-     * We need to perform a secondary pass to find the instance variable.
-     */
-    auto vtableAssigmentQuery = matchers::binaryOperator(
-		matchers::forFunction(
-			matchers::functionDecl(
-				matchers::hasName(functionInfo.GetName())
-			)
-		),
-        matchers::hasOperatorName("="),
-        matchers::hasOperands(
-            matchers::declRefExpr().bind("this"),
-            matchers::cStyleCastExpr(
-                matchers::hasSourceExpression(
-                    matchers::unaryOperator(
-                        matchers::declRefExpr().bind("declRef")
-                    )
-                )
-            )
-        )
-    );
-
-    Utils::ExecuteQuery(this, context, functionInfo, vtableAssigmentQuery,
         [&](const matchers::MatchFinder::MatchResult& result) {
             auto instance = result.Nodes.getNodeAs<clang::DeclRefExpr>("this");
             auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
 
-            if (instance == nullptr || declRef == nullptr)
-                return;
-
-			const clang::ValueDecl* instanceDeclaration = declRef->getDecl();
+            const clang::ValueDecl* instanceDeclaration = declRef->getDecl();
             if (clang::AnnotateAttr* annotationAttribute = instanceDeclaration->getAttr<clang::AnnotateAttr>())
                 reflInfo.Self = extractOffset(annotationAttribute);
 
@@ -409,151 +394,154 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
             if (clang::AnnotateAttr* annotationAttribute = vtableDeclaration->getAttr<clang::AnnotateAttr>())
                 reflInfo.Properties[0x00] = extractOffset(annotationAttribute);
         }
-    );
+    };
 
-    /**
-     * // Member assignment
-     * *(&stru_7101CF38F8 + 1) = a2;
-	 *  `-BinaryOperator 0x2374029c6c0 <line:70:5, col:31> 'unsigned long long' lvalue '='
-     * 	|-UnaryOperator 0x2374029c658 <col:5, col:27> 'unsigned long long' lvalue prefix '*' cannot overflow
-     * 	| `-ParenExpr 0x2374029c638 <col:6, col:27> 'unsigned long long *'
-     * 	|   `-BinaryOperator 0x2374029c618 <col:7, col:26> 'unsigned long long *' '+'
-     * 	|     |-UnaryOperator 0x2374029c5d8 <col:7, col:8> 'unsigned long long *' prefix '&' cannot overflow
-     * 	|     | `-DeclRefExpr 0x2374029c5b8 <col:8> 'unsigned long long' lvalue Var 0x2374029b4e8 'stru_7101CF38F8' 'unsigned long long'
-     * 	|     `-IntegerLiteral 0x2374029c5f0 <col:26> 'int' 1
-     * 	`-ImplicitCastExpr 0x2374029c6a8 <col:31> 'unsigned long long' <LValueToRValue>
-     * 	  `-DeclRefExpr 0x2374029c670 <col:31> 'unsigned long long' lvalue Var 0x2374029c538 'a2' 'unsigned long long'
-     * 
-     * This also works for assignment to a1 (instance arg). DeclRefExpr will point to a ParmVarDecl instead of a VarDecl.
-     */
-
-    /*
-     * // Member assignment (cast)
-     * *((_OWORD *)&stru_7101CF38F8 + 2) = 0xFFFFFFFF00000000LL;
-	 *  `-BinaryOperator 0x2127dd63fe0 <line:76:5, col:41> '_OWORD':'unsigned __int128' lvalue '='
-     *	|-UnaryOperator 0x2127dd63f88 <col:5, col:37> '_OWORD':'unsigned __int128' lvalue prefix '*' cannot overflow
-     *	| `-ParenExpr 0x2127dd63f68 <col:6, col:37> '_OWORD *'
-     *	|   `-BinaryOperator 0x2127dd63f48 <col:7, col:36> '_OWORD *' '+'
-     *	|     |-CStyleCastExpr 0x2127dd63ef8 <col:7, col:18> '_OWORD *' <BitCast>
-     *	|     | `-UnaryOperator 0x2127dd63e70 <col:17, col:18> 'unsigned long long *' prefix '&' cannot overflow
-     *	|     |   `-DeclRefExpr 0x2127dd63e50 <col:18> 'unsigned long long' lvalue Var 0x2127dd62d58 'stru_7101CF38F8' 'unsigned long long'
-     *	|     `-IntegerLiteral 0x2127dd63f20 <col:36> 'int' 2
-     *	`-ImplicitCastExpr 0x2127dd63fc8 <col:41> '_OWORD':'unsigned __int128' <IntegralCast>
-	 *	  `-IntegerLiteral 0x2127dd63fa0 <col:41> 'long long' -4294967296
-     * 
-	 * This also works for assignment to a1 (instance arg). DeclRefExpr will point to a ParmVarDecl instead of a VarDecl.
-     */
-    auto memberAssignmentQuery = matchers::binaryOperator(
-        matchers::forFunction(
-            matchers::functionDecl(
-                matchers::hasName(functionInfo.GetName())
-            )
+    Utils::MatchQuery memberAssignmentQuery {
+        matchFinder,
+        matchers::binaryOperator(
+	        matchers::hasOperatorName("="),
+	        matchers::hasOperands(
+		        matchers::unaryOperator(
+			        matchers::hasOperatorName("*"),
+			        matchers::hasUnaryOperand(
+				        matchers::optionally( 
+					        matchers::castExpr(
+						        matchers::hasSourceExpression(
+							        matchers::ignoringParens(
+								        matchers::binaryOperator(
+									        matchers::hasOperatorName("+"),
+									        matchers::hasOperands(
+										        matchers::optionally(
+                                                    matchers::castExpr(
+                                                        matchers::hasSourceExpression(
+                                                            matchers::anyOf(
+											                    matchers::declRefExpr().bind("declRef"),
+                                                                matchers::unaryOperator(
+                                                                    matchers::hasOperatorName("&"),
+                                                                    matchers::hasUnaryOperand(
+                                                                        matchers::declRefExpr().bind("declRef")
+                                                                    )
+                                                                )
+                                                            )
+                                                        )
+                                                    ).bind("castDeclRef")
+										        ),
+										        matchers::ignoringParenCasts(
+											        matchers::integerLiteral().bind("offset")
+										        )
+									        )
+								        )
+							        )
+						        )
+					        ).bind("castProp")
+				        )
+			        )
+		        ),
+		        matchers::anyOf(
+			        matchers::ignoringParenCasts(
+				        matchers::cxxMemberCallExpr(
+					        matchers::has(
+						        matchers::memberExpr(
+							        matchers::has(
+								        matchers::materializeTemporaryExpr(
+									        matchers::has(
+										        matchers::castExpr(
+											        matchers::hasSourceExpression(
+												        matchers::cxxConstructExpr(
+													        matchers::hasArgument(0,
+														        matchers::ignoringParenCasts(
+															        matchers::declRefExpr().bind("value")
+														        )
+													        )
+												        )
+											        )
+										        )
+									        )
+								        )
+							        )
+						        )
+					        )
+				        )
+			        ),
+			        matchers::ignoringParenCasts(
+				        matchers::integerLiteral().bind("value")
+			        )
+		        )
+	        )
         ),
-        matchers::hasOperatorName("="),
-        matchers::hasOperands(
-            matchers::unaryOperator(
-                matchers::hasUnaryOperand(
-                    matchers::ignoringParenCasts(
-                        matchers::binaryOperator(
-                            matchers::hasOperatorName("+"),
-                            matchers::hasOperands(
-                                matchers::anyOf(
-                                    /**
-	                                  *	CStyleCastExpr 0x2127dd63ef8 <col:7, col:18> '_OWORD *' <BitCast>
-	                                  *	`-UnaryOperator 0x2127dd63e70 <col:17, col:18> 'unsigned long long *' prefix '&' cannot overflow
-	                                  *	  `-DeclRefExpr 0x2127dd63e50 <col:18> 'unsigned long long' lvalue Var 0x2127dd62d58 'stru_7101CF38F8' 'unsigned long long'
-                                     */
-									matchers::cStyleCastExpr(
-										matchers::hasSourceExpression(
-                                            matchers::unaryOperator(matchers::hasUnaryOperand(
-                                                matchers::declRefExpr().bind("declRef")
-                                            ))
-										)
-									).bind("castDeclRef"),
-                                    /**
-                                	 * UnaryOperator 0x2374029c5d8 <col:7, col:8> 'unsigned long long *' prefix '&' cannot overflow
-                                	 * `-DeclRefExpr 0x2374029c5b8 <col:8> 'unsigned long long' lvalue Var 0x2374029b4e8 'stru_7101CF38F8' 'unsigned long long'
-                                     */
-									matchers::unaryOperator(matchers::hasUnaryOperand(
-                                        matchers::declRefExpr().bind("declRef")
-                                    ))
-                                ),
-                                matchers::integerLiteral().bind("offset")
-                            )
-                        )
-                    )
-                )
-            ),
-            matchers::ignoringParenCasts(
-                matchers::anyOf(
-                    matchers::integerLiteral().bind("value"),
-                    matchers::ignoringParenCasts(
-                        matchers::declRefExpr().bind("value")
-                    )
-                )
-            )
-        )
-    );
-
-    Utils::ExecuteQuery(this, context, functionInfo, memberAssignmentQuery,
         [&](const matchers::MatchFinder::MatchResult& result) {
             auto offset = result.Nodes.getNodeAs<clang::IntegerLiteral>("offset");
             auto value = result.Nodes.getNodeAs<clang::Expr>("value");
             auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
             auto castDeclRef = result.Nodes.getNodeAs<clang::CStyleCastExpr>("castDeclRef");
+            auto castProp = result.Nodes.getNodeAs<clang::CStyleCastExpr>("castProp");
 
-            if (offset == nullptr || value == nullptr || declRef == nullptr)
-                return;
-
-            // TODO: Asserts that the reference is on the first argument
+            auto instanceAttr = declRef->getDecl()->getAttr<clang::AnnotateAttr>();
+            if (instanceAttr != nullptr && reflInfo.Self == 0)
+                reflInfo.Self = extractOffset(instanceAttr);
 
             uint64_t propertyOffset = offset->getValue().getLimitedValue(std::numeric_limits<uint64_t>::max());
-            if (castDeclRef != nullptr) {
-                // clang::TypeInfo stores size and alignment in bits.
-                // Offset expressed as increments of 64 bits.
-                propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 64;
-            }
+            if (castDeclRef != nullptr)
+                propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 8;
 
-            propertyOffset *= sizeof(uint64_t); // We use offsets in bytes. No particular reason except it makes
-                                                // development of this plugin a bit easier.
-
-            if (const clang::IntegerLiteral* integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
-                // Get the value, limited to the size of the target type if it exists.
-                // If it doesn't, default to uint64.
+            if (auto integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
+                // If the target type of the cast expression is provided, retrieve the value limited to it;
+                // otherwise, it's going to be uint64 (because the argument itself is uint64).
                 uint64_t maxValue = std::numeric_limits<uint64_t>::max();
 
-                if (castDeclRef != nullptr) {
-                    uint64_t typeWidth = context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width;
-                    
+                if (castProp != nullptr) {
+                    uint64_t typeWidth = context.getTypeInfo(castProp->getTypeAsWritten()).Width;
+
+                    // Special handling for 128 bits values; split as 2x64.
                     if (typeWidth == 128) {
-                        // Special handling, store as 2x64
+                        // Note: endianness of the Switch is little endian
                         uint64_t loPart = integerLit->getValue().extractBitsAsZExtValue(64, 0);
                         uint64_t hiPart = integerLit->getValue().extractBitsAsZExtValue(64, 64);
-                        reflInfo.Properties[propertyOffset] = loPart;
-                        reflInfo.Properties[propertyOffset + sizeof(uint64_t)] = hiPart;
+
+                        reflInfo.Properties[propertyOffset + sizeof(uint64_t)] = loPart;
+                        reflInfo.Properties[propertyOffset] = hiPart;
 
                         return;
                     }
 
-                    maxValue = 1uLL << typeWidth;
+                    // 1 << 64 would overflow
+                    // Thankfully the default value is alread ULLONG_MAX
+                    if (typeWidth < 64)
+                        maxValue = (1uLL << typeWidth) - 1;
                 }
 
                 reflInfo.Properties[propertyOffset] = integerLit->getValue().getLimitedValue(maxValue);
             }
             else if (auto valueRef = clang::dyn_cast<clang::DeclRefExpr>(value)) {
+                // If it's a declaration reference, check for our annotation on the referenced symbol;
+                //   if there isn't, then it's likely assigning to some variable, and we probably don't
+                //   care.
                 auto value = valueRef->getDecl();
-                if (auto functionDecl = clang::dyn_cast<clang::FunctionDecl>(value)) {
-                    auto annotationAttribute = functionDecl->getAttr<clang::AnnotateAttr>();
-                    if (annotationAttribute == nullptr)
-                        return;
 
-                    reflInfo.Properties[propertyOffset] = extractOffset(annotationAttribute);
-                }
-                // Anything else?
+                auto annotationAttribute = value->getAttr<clang::AnnotateAttr>();
+                if (annotationAttribute == nullptr)
+                    return;
+
+                reflInfo.Properties[propertyOffset] = extractOffset(annotationAttribute);
             }
         }
-    );
+    };
+    
+    matchFinder.matchAST(context);
 
-    // This variation is necessary for reflobjects where the constructed object is inlined.
     return reflInfo;
+}
+
+void Analyzer::ProcessObject(IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
+	std::string assembledPseudocode = GeneratePseudocode(functionInfo, [](tinfo_t& argType) {
+		argType = tinfo_t{ BTF_UINT64 };
+	});
+
+	return Utils::AnalyzeFunction(functionInfo, [this, &reflInfo](clang::ASTContext& context, IDA::API::Function const& functionInfo) {
+		return this->ProcessObject(context, functionInfo, reflInfo);
+    }, assembledPseudocode);
+}
+
+void Analyzer::ProcessObject(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
+
 }
