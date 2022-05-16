@@ -18,6 +18,7 @@
 #include <string_view>
 #include <unordered_set>
 #include <fstream>
+#include <iomanip>
 #include <variant>
 
 hexdsp_t* hexdsp = nullptr;
@@ -148,6 +149,18 @@ plugin_t PLUGIN = {
 };
 
 void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
+    // Open a dialog asking for the name of the metadata type to generate
+    constexpr static const std::string_view InputForm = R"(STARTITEM 0
+BUTTON YES* Generate
+BUTTON CANCEL Cancel
+<Metadata type name:q>
+)";
+    qstring metadataTypeName;
+    auto resultCode = ask_form(InputForm.data(), &metadataTypeName);
+    if (resultCode == -1)
+        return;
+
+
     // Corresponds to the game's CRC engine.
     using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
     constexpr DreadEngine checksumEngine_;
@@ -173,6 +186,13 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         return;
 
     std::stringstream analysisOutput;
+	auto appendProperty = [&](std::string_view label, uint64_t value) {
+		if (value == 0)
+			return;
+
+		analysisOutput << "    constexpr static const uint64_t "
+			<< std::format("{:16} = 0x{:016x};", label, value) << '\n';
+	};
 
     Analyzer analyzer;
     for (auto&& [reflCtor, referenceCount] : callers) {
@@ -187,7 +207,7 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
         // std::call_once usage.
         // analyzer.ProcessObject(IDA::API::Function{ callers.front() });
 
-        IDA::API::Message("Found construction of '{}' at {:#08x}.\n", reflInfo.Name, reflCtor.GetAddress());
+        IDA::API::Message("Found construction of metadata for '{}' at {:#016x}.\n", reflInfo.Name, reflCtor.GetAddress());
 
         uint64_t fnGet = reflInfo.Properties[0x68];
         if (fnGet != 0uLL && reflInfo.Self == 0x0uLL) {
@@ -203,41 +223,27 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
             analyzer.ProcessObject(getReflInfo, reflInfo);
         }
 
-/*
-		constexpr static const std::string_view MetadataTemplate = R"(
-template <> struct Metadata<{0}> {
-    constexpr static const std::string_view Name = "{0}";
-    constexpr static const uint64_t CRC64 = 0x{1:016X};
+        if (reflInfo.Self == 0) {
+            IDA::API::Message("Could not find global instance of metadata for '{}'.", reflInfo.Name);
+            continue;
+        }
 
-    // 0x20 Unknown function pointer
-    constexpr static const uint64_t Constructor      = 0x{2:016X};
-    constexpr static const uint64_t CopyConstructor  = 0x{3:016X};
-    constexpr static const uint64_t MoveConstructor  = 0x{4:016X};
-    constexpr static const uint64_t Destructor       = 0x{5:016X};
-    // 0x48 Some sort of copy ctor?
-    // 0x50 Some sort of copy ctor?
-    constexpr static const uint64_t EqualityComparer = 0x{6:016X};
-    constexpr static const uint64_t GetHashCode      = 0x{7:016X};
-    constexpr static const uint64_t EnumerateMembers = 0x{8:016X};
-};
-)";
-
-        analysisOutput << std::vformat(MetadataTemplate,
-			std::make_format_args(
-				reflInfo.Name,
-				checksumEngine_(reflInfo.Name),
-				// reflInfo.Properties[0x20],
-				reflInfo.Properties[0x28],
-				reflInfo.Properties[0x30],
-				reflInfo.Properties[0x38],
-				reflInfo.Properties[0x40],
-				// reflInfo.Properties[0x48],
-				// reflInfo.Properties[0x50],
-				reflInfo.Properties[0x58],
-				reflInfo.Properties[0x60],
-				reflInfo.Properties[0x70]
-			)
-		);
-        */
+        analysisOutput << "template <> struct Metadata<" << reflInfo.Name << "> {\n"
+            "    constexpr static const std::string_view Name = \"" << reflInfo.Name << "\";\n"
+            "    constexpr static const uint64_t CRC64 = \"" << checksumEngine_(reflInfo.Name) << "\";\n"
+            "\n";
+        appendProperty("Instance", reflInfo.Self);
+        analysisOutput << '\n';
+        // 0x20
+        appendProperty("Constructor", reflInfo.Properties[0x28]);
+        appendProperty("CopyConstructor", reflInfo.Properties[0x30]);
+        appendProperty("MoveConstructor", reflInfo.Properties[0x38]);
+        appendProperty("Destructor", reflInfo.Properties[0x40]);
+        // 0x48
+        // 0x50
+        appendProperty("EqualityComparer", reflInfo.Properties[0x58]);
+        appendProperty("GetHashCode", reflInfo.Properties[0x60]);
+        appendProperty("EnumerateMembers", reflInfo.Properties[0x70]);
+        analysisOutput << "};\n\n";
     }
 }

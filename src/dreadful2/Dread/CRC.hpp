@@ -11,25 +11,23 @@ namespace CRC {
 	struct Engine {
 		using value_type = std::common_type_t<decltype(Seed), decltype(Polynomial), decltype(FinalXor)>;
 
-		// Implementation without lookup tables because MSVC complains about step count
-		//   and I don't want to change it.
+	private:
+		constexpr static const size_t shift_offset = (sizeof(value_type) - 1) * 8;
+		constexpr static const value_type topbit_mask = value_type{ 0x80 } << shift_offset;
+
+	public:
 		constexpr Engine() noexcept {
-			// Left for posterity.
-			// for (uint8_t dividend = 0; dividend < _lookupTable.size(); ++dividend) {
-			// 	value_type currentByte = value_type(dividend) << 56uLL;
-			// 
-			// 	value_type value = currentByte;
-			// 	for (size_t i = 0; i < currentByte; ++i) {
-			// 		if ((dividend & 0x80) != 0) {
-			// 			value <<= 1;
-			// 			value ^= Polynomial;
-			// 		}
-			// 		else
-			// 			value <<= 1;
-			// 	}
-			// 
-			// 	_lookupTable[dividend] = value;
-			// }
+			for (size_t i = 0; i < _lookupTable.size(); ++i) {
+				value_type currentByte = static_cast<value_type>(i) << shift_offset;
+				for (size_t j = 0; j < CHAR_BIT; ++j) {
+					if (currentByte & topbit_mask)
+						currentByte = (currentByte << 1uLL) ^ Polynomial;
+					else
+						currentByte <<= 1;
+				}
+
+				_lookupTable[i] = currentByte;
+			}
 		}
 
 		constexpr value_type operator () (std::string_view input) const noexcept {
@@ -41,37 +39,30 @@ namespace CRC {
 					character = (character * 0x02'02'02'02'02uLL & 0x010884422010uLL) % 1023;
 				}
 
-				// Left for posterity
-				// checksum = checksum ^ (value_type(character) << 56uLL);
-				// auto lookupIndex = checksum >> 56;
-				// assert(lookupIndex >= 0 && lookupIndex <= _lookupTable.size());
-				// checksum <<= 8uLL;
-				// checksum ^= _lookupTable[lookupIndex];
+				checksum ^= static_cast<value_type>(character) << shift_offset;
 
-				checksum = checksum ^ (value_type(character) << 56uLL);
-				for (size_t i = 0; i < 8; ++i) {
-					if ((checksum >> 56) & 0x80) {
-						checksum = (checksum << 1) ^ Polynomial;
-					}
-					else
-						checksum <<= 1;
-				}
+				auto lookupIndex = checksum >> shift_offset;
+				checksum = (checksum << CHAR_BIT) ^ _lookupTable[lookupIndex];
 			}
 
 			if constexpr (ReflectResult) {
+#if defined(__cpp_lib_byteswap) && __cplusplus > 202002L
+				checksum = std::byteswap(checksum);
+#else
 				// http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel
 				size_t shift = sizeof(value_type) * CHAR_BIT;
-				size_t mask = ~0;
-				while ((shift >>= 1) != 0) {
+				size_t mask = (~0 & std::numeric_limits<value_type>::max());
+				while ((shift >>= 1) > 0) {
 					mask ^= (mask << shift);
-					checksum = ((checksum & mask) >> shift) | ((checksum & ~mask) << shift);
+					checksum = ((checksum >> shift) & mask) | ((checksum << shift) & ~mask);
 				}
+#endif
 			}
 
 			return checksum ^ FinalXor;
 		}
 
 	private:
-		// std::array<value_type, 256> _lookupTable;
+		std::array<value_type, 256> _lookupTable;
 	};
 }

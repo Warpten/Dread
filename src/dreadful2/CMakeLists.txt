@@ -79,7 +79,7 @@ foreach (target IN ITEMS dreadful2_plugin ) #dreadful2_exe)
 
   target_compile_features(${target}
     PUBLIC
-      cxx_std_23
+      cxx_std_20
   )
 
   add_custom_command(TARGET ${target} POST_BUILD

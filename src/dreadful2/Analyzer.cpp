@@ -17,6 +17,19 @@
 using namespace clang;
 namespace matchers = clang::ast_matchers;
 
+auto extractOffset(clang::AnnotateAttr* attribute) -> uint64_t {
+	llvm::StringRef annotation{ attribute->getAnnotation() };
+	if (!annotation.startswith("0x"))
+		return 0uLL;
+
+	uint64_t offsetValue = 0uLL;
+	auto [ptr, ec] = std::from_chars(annotation.data() + 2, annotation.data() + annotation.size(), offsetValue, 16);
+	if (ec != std::errc{})
+		return 0uLL;
+
+	return offsetValue;
+};
+
 const matchers::internal::VariadicDynCastAllOfMatcher<clang::Expr, clang::RecoveryExpr> recoveryExpr;
 
 namespace Utils {
@@ -327,19 +340,6 @@ auto Analyzer::ProcessReflectionObjectConstruction(IDA::API::Function const& fun
 auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, IDA::API::Function const& functionInfo)
     -> ReflInfo
 {
-	auto extractOffset = [](clang::AnnotateAttr* attribute) -> uint64_t {
-		llvm::StringRef annotation{ attribute->getAnnotation() };
-        if (!annotation.startswith("0x"))
-            return 0uLL;
-
-		uint64_t offsetValue = 0uLL;
-		auto [ptr, ec] = std::from_chars(annotation.data() + 2, annotation.data() + annotation.size(), offsetValue, 16);
-		if (ec != std::errc{})
-			return 0uLL;
-
-		return offsetValue;
-	};
-
 	ReflInfo reflInfo;
     // Scope query segment to limit results to the function being decompiled
     //   Probably overkill, but just in case plugins/defs.h does wonky stuff.
@@ -543,5 +543,35 @@ void Analyzer::ProcessObject(IDA::API::Function const& functionInfo, ReflInfo& r
 }
 
 void Analyzer::ProcessObject(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
+	auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
 
+    
+    matchers::MatchFinder firstStage;
+    Utils::MatchQuery findReturnStmtQuery{
+        firstStage,
+        matchers::returnStmt(
+            scopeQuery,
+            matchers::hasReturnValue(
+                matchers::ignoringParenCasts(
+                    matchers::unaryOperator(
+                        matchers::hasOperatorName("&"),
+                        matchers::hasUnaryOperand(
+                            matchers::declRefExpr().bind("instance")
+                        )
+                    )
+                )
+            )
+        ),
+        [&](const matchers::MatchFinder::MatchResult& result) {
+            auto instanceVariable = result.Nodes.getNodeAs<clang::DeclRefExpr>("instance");
+
+            auto attribute = instanceVariable->getDecl()->getAttr<clang::AnnotateAttr>();
+            if (attribute == nullptr)
+                return;
+
+            reflInfo.Self = extractOffset(attribute);
+        }
+    };
+
+    firstStage.matchAST(context);
 }
