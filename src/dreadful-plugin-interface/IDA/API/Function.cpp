@@ -1,12 +1,5 @@
 #include "DecompilationException.hpp"
 #include "Function.hpp"
- 
-#include <llvm/ADT/StringRef.h>
-
-#include <clang/Basic/Diagnostic.h>
-#include <clang/ASTMatchers/ASTMatchFinder.h>
-#include <clang/ASTMatchers/ASTMatchers.h>
-#include <clang/Tooling/Tooling.h>
 
 #include <regex>
 #include <set>
@@ -161,8 +154,6 @@ namespace IDA::API {
 		functionPointer->build_c_tree();
 		functionPointer->refresh_func_ctext();
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
-
-		// assembledPseudocode << "#include <" IDA_INCLUDE_DIR "/../../../plugins/defs.h>\n";
 
 		for (simpleline_t line : pseudocodeLines) {
 			tag_remove(&line.line, 0);

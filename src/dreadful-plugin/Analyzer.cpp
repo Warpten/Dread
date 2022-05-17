@@ -1,12 +1,17 @@
 #include "Analyzer.hpp"
-#include "AST/Explorer.hpp"
-#include "IDA/API/Function.hpp"
 
-#include <regex>
-#include <type_traits>
+// ast-parser
+#include <AST/Explorer.hpp>
+// dreadful-plugin-interface
+#include <IDA/API/Function.hpp>
 
 #include <hexrays.hpp>
 
+// std
+#include <regex>
+#include <type_traits>
+
+// clang
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ASTMatchers/ASTMatchersInternal.h>
 #include <clang/Tooling/Tooling.h>

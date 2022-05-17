@@ -10,8 +10,8 @@
 
 #include "Analyzer.hpp"
 #include "Dread/CRC.hpp"
-#include "IDA/API.hpp"
-#include "IDA/API/Function.hpp"
+#include <IDA/API.hpp>
+#include <IDA/API/Function.hpp>
 
 #include <array>
 #include <cstdint>

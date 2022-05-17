@@ -180,23 +180,13 @@ function (link_ida plugin_name)
 
     # Link against IDA (or the SDKs libs on Windows).
     target_link_libraries(${plugin_name}
-		${ida_libraries})
-
+        PUBLIC
+            ${ida_libraries}
+    )
 endfunction (link_ida)
 
-function (add_ida_plugin plugin_name)
-    set(sources ${ARGV})
-    if (sources)
-        list(REMOVE_AT sources 0)
-    endif ()
-
-    # Define target
-    string(STRIP "${sources}" sources)
-    add_library(${plugin_name} SHARED ${sources})
-
-    link_ida(${plugin_name})
-
-    # OS specific stuff.
+function (ida_set_platform_specifics target_name)
+    # OS Specific stuff
     if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
         target_compile_definitions(${plugin_name} PUBLIC "__NT__")
 
@@ -247,14 +237,41 @@ function (add_ida_plugin plugin_name)
         endif ()
     endif ()
 
-    # Suppress "lib" prefix on Unix and alter the file extension.
     set_target_properties(${plugin_name} PROPERTIES
         PREFIX ""
         SUFFIX ${plugin_extension}
-        OUTPUT_NAME ${plugin_name})
+        OUTPUT_NAME ${plugin_name}
+    )
+endfunction (ida_set_platform_specifics)
+
+function (add_ida_library interface_name)
+    set(sources ${ARGV})
+    if (sources)
+        list(REMOVE_AT sources 0)
+    endif ()
+
+    # Define target
+    string(STRIP "${sources}" sources)
+    add_library(${interface_name} STATIC ${sources})
+
+    link_ida(${interface_name})
+endfunction (add_ida_library)
+
+function (add_ida_plugin plugin_name)
+    set(sources ${ARGV})
+    if (sources)
+        list(REMOVE_AT sources 0)
+    endif ()
+
+    # Define target
+    string(STRIP "${sources}" sources)
+    add_library(${plugin_name} SHARED ${sources})
+
+    link_ida(${plugin_name})
+
+    ida_set_platform_specifics(${plugin_name})
 
     # Define install rule
-    install(TARGETS ${plugin_name} DESTINATION plugins)
 
     # When generating for Visual Studio, 
     # generate user file for convenient debugging support.
@@ -323,6 +340,8 @@ function (add_ida_qt_plugin plugin_name)
                 PROPERTIES 
                 IMPORTED_LOCATION_RELEASE "${IDA_Qt${qtlib}_LIBRARY}")
         endif ()
-        target_link_libraries(${CMAKE_PROJECT_NAME} "Qt5::${qtlib}")
+        target_link_libraries(${CMAKE_PROJECT_NAME}
+          PRIVATE
+            "Qt5::${qtlib}")
     endforeach()
 endfunction ()
