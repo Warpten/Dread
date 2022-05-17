@@ -16,7 +16,7 @@ namespace CRC {
 		constexpr static const value_type topbit_mask = value_type{ 0x80 } << shift_offset;
 
 	public:
-		constexpr Engine() noexcept {
+		constexpr Engine() noexcept : _lookupTable() {
 			for (size_t i = 0; i < _lookupTable.size(); ++i) {
 				value_type currentByte = static_cast<value_type>(i) << shift_offset;
 				for (size_t j = 0; j < CHAR_BIT; ++j) {
@@ -36,7 +36,7 @@ namespace CRC {
 			for (char character : input) {
 				if constexpr (ReflectInput) {
 					// https://graphics.stanford.edu/~seander/bithacks.html#ReverseByteWith64BitsDiv
-					character = (character * 0x02'02'02'02'02uLL & 0x010884422010uLL) % 1023;
+					character = (character * 0x02'02'02'02'02uLL & 0x01'08'84'42'20'10uLL) % 1023;
 				}
 
 				checksum ^= static_cast<value_type>(character) << shift_offset;
@@ -46,7 +46,7 @@ namespace CRC {
 			}
 
 			if constexpr (ReflectResult) {
-#if defined(__cpp_lib_byteswap) && __cplusplus > 202002L
+#if __cpp_lib_byteswap >= 202110L
 				checksum = std::byteswap(checksum);
 #else
 				// http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel

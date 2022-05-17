@@ -1,5 +1,5 @@
 #include "Analyzer.hpp"
-#include "SyntaxTreeVisitor.hpp"
+#include "AST/Explorer.hpp"
 #include "IDA/API/Function.hpp"
 
 #include <regex>
@@ -7,11 +7,8 @@
 
 #include <hexrays.hpp>
 
-#include <clang/AST/RecursiveASTVisitor.h>
-#include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ASTMatchers/ASTMatchersInternal.h>
-#include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 
 using namespace clang;
@@ -31,61 +28,6 @@ auto extractOffset(clang::AnnotateAttr* attribute) -> uint64_t {
 };
 
 const matchers::internal::VariadicDynCastAllOfMatcher<clang::Expr, clang::RecoveryExpr> recoveryExpr;
-
-namespace Utils {
-    /// <summary>
-    /// Associates a query with a query callback.
-    /// Construction registers the query for the finder.
-    /// </summary>
-    template <typename QueryCallback>
-	struct MatchQuery final : matchers::MatchFinder::MatchCallback {
-        template <typename Query>
-		MatchQuery(matchers::MatchFinder& finder, Query&& query, QueryCallback handler) noexcept
-			: _handler(handler) {
-            finder.addMatcher(query, this);
-        }
-
-		void run(const matchers::MatchFinder::MatchResult& result) override {
-			std::invoke(_handler, result);
-		}
-
-	private:
-		QueryCallback _handler;
-	};
-
-    template <typename Handler>
-    auto AnalyzeFunction(IDA::API::Function const& functionInfo, Handler handler, std::string_view sourceCode)
-        -> std::invoke_result_t<Handler, clang::ASTContext&, IDA::API::Function const&>
-    {
-        using namespace clang;
-
-		clang::IgnoringDiagConsumer diagnosticConsumer;
-
-        using namespace std::string_literals;
-
-        auto astUnit = tooling::buildASTFromCodeWithArgs(sourceCode,
-            { "-std=c++20"s, "-fsyntax-only"s },
-            "disassembly.cpp",
-            "dread-tool"s,
-            std::make_shared<PCHContainerOperations>(),
-            tooling::getClangStripDependencyFileAdjuster(),
-            tooling::FileContentMappings(),
-            &diagnosticConsumer);
-
-		using return_type = std::invoke_result_t<Handler, clang::ASTContext&, IDA::API::Function const&>;
-
-        if constexpr (!std::is_void_v<return_type>) {
-            if (astUnit == nullptr)
-                return return_type{};
-        }
-        else {
-            if (astUnit == nullptr)
-                return;
-        }
-
-        return handler(astUnit->getASTContext(), functionInfo);
-    }
-}
 
 std::string GeneratePseudocode(IDA::API::Function const& functionInfo, std::function<void(tinfo_t&)> returnTypeTransform) {
     auto modifyArgCallback = [](tinfo_t& argType) {
@@ -307,7 +249,7 @@ auto Analyzer::ProcessReflectionObjectConstruction(IDA::API::Function const& fun
         argType = tinfo_t{ BTF_VOID };
     });
 
-    return Utils::AnalyzeFunction(functionInfo, [this](clang::ASTContext& context, IDA::API::Function const& functionInfo) -> ReflInfo {
+    return ParsePseudoCode([this, &functionInfo](clang::ASTContext& context) -> ReflInfo {
         return this->ProcessReflectionObjectConstruction(context, functionInfo);
     }, assembledPseudocode);
 }
@@ -319,10 +261,8 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
     // Scope query segment to limit results to the function being decompiled
     //   Probably overkill, but just in case plugins/defs.h does wonky stuff.
 	auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
-    matchers::MatchFinder matchFinder;
-
-    Utils::MatchQuery reflectedNameQuery { 
-        matchFinder,
+    AST::Explorer matchFinder(context);
+    matchFinder.AddMatcher(
         matchers::callExpr(
             scopeQuery,
             matchers::hasArgument(0, matchers::hasDescendant(matchers::stringLiteral().bind("stringLiteral"))),
@@ -342,11 +282,10 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                 if (character == '_')
                     character = ':';
         }
-    };
+    );
 
     //< Handle vtable assignment.
-    Utils::MatchQuery vtableAssigmentQuery{
-        matchFinder,
+    matchFinder.AddMatcher(
         matchers::binaryOperator(
             scopeQuery,
             matchers::hasOperatorName("="),
@@ -369,46 +308,44 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
             if (clang::AnnotateAttr* annotationAttribute = vtableDeclaration->getAttr<clang::AnnotateAttr>())
                 reflInfo.Properties[0x00] = extractOffset(annotationAttribute);
         }
+    );
+
+    auto optionallyCastExpr = [](std::string_view castBind, auto&& query) {
+        return matchers::anyOf(
+            query,
+            matchers::castExpr(matchers::hasSourceExpression(query)).bind(castBind)
+        );
     };
 
-    Utils::MatchQuery memberAssignmentQuery {
-        matchFinder,
+    matchFinder.AddMatcher(
         matchers::binaryOperator(
 	        matchers::hasOperatorName("="),
 	        matchers::hasOperands(
 		        matchers::unaryOperator(
 			        matchers::hasOperatorName("*"),
 			        matchers::hasUnaryOperand(
-				        matchers::optionally( 
-					        matchers::castExpr(
-						        matchers::hasSourceExpression(
-							        matchers::ignoringParens(
-								        matchers::binaryOperator(
-									        matchers::hasOperatorName("+"),
-									        matchers::hasOperands(
-										        matchers::optionally(
-                                                    matchers::castExpr(
-                                                        matchers::hasSourceExpression(
-                                                            matchers::anyOf(
-											                    matchers::declRefExpr().bind("declRef"),
-                                                                matchers::unaryOperator(
-                                                                    matchers::hasOperatorName("&"),
-                                                                    matchers::hasUnaryOperand(
-                                                                        matchers::declRefExpr().bind("declRef")
-                                                                    )
-                                                                )
-                                                            )
-                                                        )
-                                                    ).bind("castDeclRef")
-										        ),
-										        matchers::ignoringParenCasts(
-											        matchers::integerLiteral().bind("offset")
-										        )
-									        )
-								        )
-							        )
-						        )
-					        ).bind("castProp")
+                        optionallyCastExpr("castProp", 
+							matchers::ignoringParens(
+								matchers::binaryOperator(
+									matchers::hasOperatorName("+"),
+									matchers::hasOperands(
+                                        optionallyCastExpr("castDeclRef",
+                                            matchers::anyOf(
+											    matchers::declRefExpr().bind("declRef"),
+                                                matchers::unaryOperator(
+                                                    matchers::hasOperatorName("&"),
+                                                    matchers::hasUnaryOperand(
+                                                        matchers::declRefExpr().bind("declRef")
+                                                    )
+                                                )
+                                            )
+										),
+										matchers::ignoringParenCasts(
+											matchers::integerLiteral().bind("offset")
+										)
+									)
+								)
+							)
 				        )
 			        )
 		        ),
@@ -458,6 +395,8 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
             uint64_t propertyOffset = offset->getValue().getLimitedValue(std::numeric_limits<uint64_t>::max());
             if (castDeclRef != nullptr)
                 propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 8;
+            else
+                propertyOffset *= sizeof(uint64_t);
 
             if (auto integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
                 // If the target type of the cast expression is provided, retrieve the value limited to it;
@@ -500,30 +439,29 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                 reflInfo.Properties[propertyOffset] = extractOffset(annotationAttribute);
             }
         }
-    };
-    
-    matchFinder.matchAST(context);
+    );
+
+    matchFinder.Run();
 
     return reflInfo;
 }
 
 void Analyzer::ProcessObject(IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
-	std::string assembledPseudocode = GeneratePseudocode(functionInfo, [](tinfo_t& argType) {
-		argType = tinfo_t{ BTF_UINT64 };
-	});
+    std::string assembledPseudocode = GeneratePseudocode(functionInfo, [](tinfo_t& argType) {
+        argType = tinfo_t{ BTF_UINT64 };
+        });
 
-	return Utils::AnalyzeFunction(functionInfo, [this, &reflInfo](clang::ASTContext& context, IDA::API::Function const& functionInfo) {
-		return this->ProcessObject(context, functionInfo, reflInfo);
+    return ParsePseudoCode([this, &functionInfo, &reflInfo](clang::ASTContext& context) {
+        return this->ProcessObject(context, functionInfo, reflInfo);
     }, assembledPseudocode);
 }
 
 void Analyzer::ProcessObject(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
-	auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
+    auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
 
+    AST::Explorer firstStage(context);
     
-    matchers::MatchFinder firstStage;
-    Utils::MatchQuery findReturnStmtQuery{
-        firstStage,
+    firstStage.AddMatcher(
         matchers::returnStmt(
             scopeQuery,
             matchers::hasReturnValue(
@@ -546,7 +484,129 @@ void Analyzer::ProcessObject(clang::ASTContext& context, IDA::API::Function cons
 
             reflInfo.Self = extractOffset(attribute);
         }
-    };
+    );
 
-    firstStage.matchAST(context);
+    firstStage.Run();
+}
+
+
+void Analyzer::ProcessReflectionObjectConstructionCall(IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
+    std::string assembledPseudocode = GeneratePseudocode(functionInfo, [](tinfo_t& argType) {
+        argType = tinfo_t{ BTF_UINT64 };
+        });
+
+    return ParsePseudoCode([this, &reflInfo, &functionInfo, reflCtor](clang::ASTContext& context) {
+        return this->ProcessReflectionObjectConstructionCall(context, functionInfo, reflInfo, reflCtor);
+    }, assembledPseudocode);
+}
+
+void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
+    // This also has a return (uint64_t)&...
+    // So just reuse that
+    ProcessObject(context, functionInfo, reflInfo);
+
+    // And now for the fun part
+    std::vector<const clang::CallExpr*> callExpressions;
+    { // Dump all call expressions
+        AST::Explorer finder(context);
+        finder.AddMatcher(
+            matchers::callExpr().bind("root"),
+            [&](const matchers::MatchFinder::MatchResult& result) {
+                callExpressions.push_back(result.Nodes.getNodeAs<clang::CallExpr>("root"));
+            }
+        );
+        finder.Run();
+    }
+
+    auto ctorCallSite = [&]() -> const clang::CallExpr* {
+        auto itr = std::find_if(callExpressions.begin(), callExpressions.end(), [&](const clang::CallExpr* callExpression) -> bool {
+            auto calleeAttr = callExpression->getCalleeDecl()->getAttr<clang::AnnotateAttr>();
+            return calleeAttr != nullptr && extractOffset(calleeAttr) == reflCtor;
+        });
+
+        if (itr != callExpressions.end())
+            return *itr;
+
+        return nullptr;
+    }();
+
+    // If ProcessObject didn't find the global instance, do that now
+	if (reflInfo.Self == 0) {
+        // 2. Inspect arguments
+        auto thisArg = ctorCallSite->getArg(0);
+        if (auto unaryOpArg = clang::dyn_cast<clang::UnaryOperator>(thisArg)) {
+            assert(unaryOpArg->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf);
+            if (auto declRef = clang::dyn_cast<clang::DeclRefExpr>(unaryOpArg->getSubExpr())) {
+                clang::AnnotateAttr* annotationAttr = declRef->getDecl()->getAttr<clang::AnnotateAttr>();
+                if (annotationAttr != nullptr)
+                    return;
+
+                reflInfo.Self = extractOffset(annotationAttr);
+            }
+        }
+    }
+
+    // auto nameVarDecl = [&]() -> const clang::Decl* {
+	// 	auto nameReference = clang::dyn_cast<clang::UnaryOperator>(ctorCallSite->getArg(1));
+	// 	if (nameReference != nullptr && nameReference->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf)
+    //         return clang::dyn_cast<clang::Decl>(nameReference->getSubExpr());
+    //     return nullptr;
+    // }();
+    // 
+    // matchers::callExpr(
+    //     matchers::callee(matchers::equalsNode(ctorCallSite->getCalleeDecl())),
+    //     matchers::hasArgument(0,
+    //         matchers::declRefExpr(matchers::to(matchers::equalsNode(nameVarDecl)))
+    //     ),
+    //     matchers::hasArgument(1,
+    //         matchers::unaryOperator(
+    //             matchers::hasOperatorName("&"),
+    //             matchers::hasUnaryOperand(
+    //                 matchers::declRefExpr(matchers::to(matchers::decl().bind("nameDecl")))
+    //             )
+    //         )
+    //     )
+    // ).bind("root");
+    // 
+    // // Second argument is a DeclRefExpr to a VarDecl that is the name of the object
+    // auto nameReference = clang::dyn_cast<clang::UnaryOperator>(ctorCallSite->getArg(1));
+    // if (nameReference != nullptr && nameReference->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf) {
+    //     auto nameDecl = clang::dyn_cast<clang::Decl>(nameReference->getSubExpr());
+    // 
+    //     // Find the assignment
+    //     matchers::MatchFinder callMatcher;
+    // 
+    //     Utils::MatchQuery query{
+    //         callMatcher,
+    //         matchers::callExpr(
+    //             matchers::callee(matchers::equalsNode(ctorCallSite->getCalleeDecl())),
+    //             matchers::argumentCountIs(3),
+    //             matchers::hasArgument(0,
+    //                 matchers::declRefExpr(matchers::to(matchers::equalsNode(nameDecl)))
+    //             ),
+    //             matchers::hasArgument(1,
+    //                 matchers::ignoringParenCasts(matchers::stringLiteral().bind("typeName"))
+    //             ),
+    //             matchers::hasArgument(2,
+    //                 matchers::ignoringParenCasts(matchers::integerLiteral(matchers::equals(1)))
+    //             )
+    //         ),
+    //         [&](const matchers::MatchFinder::MatchResult& result) {
+    //             auto typeName = result.Nodes.getNodeAs<clang::StringLiteral>("typeName");
+    // 
+    //             reflInfo.TypeName = typeName->getBytes();
+    //         }
+    //     };
+    // 
+    //     callMatcher.matchAST(context);
+    // }
+    // 
+    // // Third argument may be a local variable, which is assigned from a call, meaning this type has a base type
+    // if (auto baseTypeDeclRef = clang::dyn_cast<clang::DeclRefExpr>(ctorCallSite->getArg(2))) {
+    //     auto baseTypeDecl = clang::dyn_cast<clang::VarDecl>(baseTypeDeclRef->getDecl());
+    // }
+}
+
+void Analyzer::HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) {
+
 }

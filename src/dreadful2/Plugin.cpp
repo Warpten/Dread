@@ -153,13 +153,14 @@ void Plugin::PluginImpl::Execute(VersionInfo const* versionInfo) {
     constexpr static const std::string_view InputForm = R"(STARTITEM 0
 BUTTON YES* Generate
 BUTTON CANCEL Cancel
+
 <Metadata type name:q>
+
 )";
     qstring metadataTypeName;
     auto resultCode = ask_form(InputForm.data(), &metadataTypeName);
     if (resultCode == -1)
         return;
-
 
     // Corresponds to the game's CRC engine.
     using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
@@ -224,7 +225,16 @@ BUTTON CANCEL Cancel
         }
 
         if (reflInfo.Self == 0) {
-            IDA::API::Message("Could not find global instance of metadata for '{}'.", reflInfo.Name);
+            // If we couldn't find it, then try by looking at callers
+            std::vector<ea_t> callers = reflCtor.GetReferencesTo(XREF_FAR);
+            assert(callers.size() == 1);
+
+            IDA::API::Function callerInfo{ callers.front() };
+            analyzer.ProcessReflectionObjectConstructionCall(callerInfo, reflInfo, reflCtor.GetAddress());
+        }
+
+        if (reflInfo.Self == 0) {
+            IDA::API::Message("Could not find global instance of metadata for '{}'.\n", reflInfo.Name);
             continue;
         }
 
