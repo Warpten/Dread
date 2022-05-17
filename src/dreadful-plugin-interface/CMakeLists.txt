@@ -6,20 +6,24 @@ CollectSourceFiles(
 
 GroupSources(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_ida_library(dreadful-plugin-interface
+add_ida_library(dreadful-plugin-ida-base
   ${PRIVATE_SOURCES}
 )
 
-add_dependencies(dreadful-plugin-interface ast-parser)
+target_compile_definitions(dreadful-plugin-ida-base
+  PRIVATE
+    IDA_INCLUDE_DIR="${IDA_LIB_DIR}"
+)
 
-target_include_directories(dreadful-plugin-interface
+
+target_include_directories(dreadful-plugin-ida-base
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR})
 
 if (MSVC)
-  target_compile_options(dreadful-plugin-interface PUBLIC "/Zc:__cplusplus")
+  target_compile_options(dreadful-plugin-ida-base PUBLIC "/Zc:__cplusplus")
 endif()
 
-target_compile_features(dreadful-plugin-interface PUBLIC cxx_std_20)
+target_compile_features(dreadful-plugin-ida-base PUBLIC cxx_std_20)

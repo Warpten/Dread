@@ -11,17 +11,15 @@ add_ida_plugin(dreadful-plugin-dump
 )
 
 add_dependencies(dreadful-plugin-dump
-  ast-parser
-  dreadful-plugin-interface
+  dreadful-plugin-ida-base
 )
 
 target_link_libraries(dreadful-plugin-dump
   PRIVATE
-    ast-parser
-    dreadful-plugin-interface
+    dreadful-plugin-ida-base
 )
 
-target_include_directories(dreadful-plugin-dump 
+target_include_directories(dreadful-plugin-dump
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE

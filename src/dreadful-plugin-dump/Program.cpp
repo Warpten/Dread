@@ -8,6 +8,10 @@
 #include <loader.hpp>
 #pragma warning(pop)
 
+#include <Utils/Exporter.hpp>
+#include <IDA/API/Function.hpp>
+#include <IDA/API.hpp>
+
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -104,5 +108,14 @@ plugin_t PLUGIN = {
 };
 
 void Plugin::PluginImpl::Execute() {
+	ea_t screenEA = get_screen_ea();
 
+	std::stringstream outputStream;
+
+	Utils::Exporter exporter(outputStream);
+	exporter.Run(IDA::API::Function{ screenEA }, [](tinfo_t&) {});
+
+	IDA::API::Message("// EXPORTED PSEUDOCODE STARTS HERE ///////////////\n");
+	IDA::API::Message("{}\n", outputStream.str());
+	IDA::API::Message("// EXPORTED PSEUDOCODE ENDS HERE   ///////////////");
 }

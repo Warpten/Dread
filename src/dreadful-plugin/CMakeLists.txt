@@ -17,8 +17,8 @@ add_ida_plugin(dreadful-plugin
 )
 
 add_dependencies(dreadful-plugin
-  ast-parser
-  dreadful-plugin-interface
+  dreadful-ast-parser
+  dreadful-plugin-ida-base
 )
 
 target_include_directories(dreadful-plugin
@@ -28,15 +28,10 @@ target_include_directories(dreadful-plugin
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-target_compile_definitions(dreadful-plugin
-  PRIVATE
-    IDA_INCLUDE_DIR="${IDA_LIB_DIR}"
-)
-
 target_link_libraries(dreadful-plugin
   PRIVATE
-    ast-parser
-    dreadful-plugin-interface
+    dreadful-plugin-ida-base
+    dreadful-ast-parser
 )
 
 target_compile_features(dreadful-plugin
