@@ -110,6 +110,11 @@ plugin_t PLUGIN = {
 void Plugin::PluginImpl::Execute() {
 	ea_t screenEA = get_screen_ea();
 
+	if (!IDA::API::IsFunction(screenEA)) {
+		IDA::API::OpenMessageBox(IDA::API::MessageBoxLevel::Warning, "Cursor is not part of a function");
+		return;
+	}
+
 	std::stringstream outputStream;
 
 	Utils::Exporter exporter(outputStream);

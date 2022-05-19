@@ -240,7 +240,8 @@ namespace IDA::API {
 					if (!(xrefFlags & XREF_DATA) && is_func(flags))
 						return true;
 
-					if (!(xrefFlags & XREF_FAR) && is_data(flags))
+					// Also dump unexplored bytes here just in case
+					if (!(xrefFlags & XREF_FAR) && (is_data(flags) || is_unknown(flags)))
 						return true;
 
 					return false;

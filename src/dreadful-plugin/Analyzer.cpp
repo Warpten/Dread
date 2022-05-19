@@ -78,11 +78,6 @@ auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, I
                 return;
 
             reflInfo.Name = stringLiteral->getBytes();
-
-            // Small fixup, needed because of the string replacements we do on the pseudocode...
-            for (char& character : reflInfo.Name)
-                if (character == '_')
-                    character = ':';
         }
     );
 
@@ -350,6 +345,18 @@ auto ExtractArgument(const clang::Expr* arg) -> const T* {
 		return ExtractArgument<T>(materializeExpr->getSubExpr());
 
 	return nullptr;
+}
+
+template <typename T, typename Fn>
+auto ProcessParameter(const clang::CallExpr* callSite, size_t index, Fn&& fn) {
+	if (callSite == nullptr || callSite->getNumArgs() < index)
+		return false;
+
+	auto parameter = ExtractArgument<T>(callSite->getArg(index));
+	if (parameter != nullptr)
+		return fn(parameter);
+
+	return false;
 };
 
 
@@ -357,7 +364,6 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
     std::unordered_set<const clang::CallExpr*> functionCalls;
     std::unordered_map<const clang::Decl*, const clang::FunctionDecl*> assignments;
     std::unordered_map<const clang::Decl*, const clang::CallExpr*> constructions;
-
 
     AST::Explorer explorer(context);
     explorer.AddMatcher(matchers::binaryOperator(
@@ -424,24 +430,19 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
         return nullptr;
     }();
 
-    if (constructorCallSite == nullptr || constructorCallSite->getNumArgs() == 0)
+	// CreateReflInfo(&instance, &name, baseTypePtr, pfn1, pfn2);
+
+	if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 0, [&reflInfo](const clang::DeclRefExpr* instanceParameter) {
+		auto instanceAttribute = instanceParameter->getDecl()->getAttr<clang::AnnotateAttr>();
+		if (instanceAttribute == nullptr)
+			return false;
+
+		reflInfo.Self = extractOffset(instanceAttribute);
+        return true;
+    }))
         return;
 
-    // CreateReflInfo(&instance, &name, baseTypePtr, pfn1, pfn2);
-    auto instanceParameter = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(0));
-    if (instanceParameter != nullptr) {
-        auto instanceAttribute = instanceParameter->getDecl()->getAttr<clang::AnnotateAttr>();
-        if (instanceAttribute == nullptr)
-            return;
-
-        reflInfo.Self = extractOffset(instanceAttribute);
-    }
-    else {
-        return;
-    }
-    
-    auto nameParameter = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(1));
-    if (nameParameter != nullptr) {
+    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 1, [&](const clang::DeclRefExpr* nameParameter) {
         auto typeNameAssignmentValue = [&]() -> const clang::CallExpr* {
             auto typeNameConstruction = constructions.find(nameParameter->getDecl());
             if (typeNameConstruction == constructions.end())
@@ -450,44 +451,77 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
             return typeNameConstruction->second;
         }();
 
-        if (typeNameAssignmentValue == nullptr)
-            return;
+        if (typeNameAssignmentValue != nullptr) {
+            auto typeName = ExtractArgument<clang::StringLiteral>(typeNameAssignmentValue->getArg(1));
+            if (typeName == nullptr)
+                return false;
 
-        auto typeName = ExtractArgument<clang::StringLiteral>(typeNameAssignmentValue->getArg(1));
-        if (typeName == nullptr)
-            return;
+            reflInfo.TypeName = typeName->getBytes();
+            return true;
+        }
 
-        reflInfo.TypeName = typeName->getBytes();
+        return false;
+    })) {
+        // Problem: the call to base::global::CStrId (which is really what we're looking for here)
+        //   likely got inlined, meaning that instead we have to look for CRC64 in this really stupid way
+        //   and hope that there isn't more than one call into it.
+        // https://i.imgur.com/PUOAzoy.png
+        // Here is the expected output: https://i.imgur.com/GFA6X9a.png
+        AST::Explorer crcExplorer(context);
+        crcExplorer.AddMatcher(matchers::callExpr(
+			matchers::callee(matchers::functionDecl(matchers::hasAttr(clang::attr::Annotate)).bind("functionDecl")),
+            matchers::hasArgument(0, matchers::stringLiteral().bind("typeName")),
+            matchers::hasArgument(1, matchers::integerLiteral().bind("integerLiteral"))
+        ), [&](const matchers::MatchFinder::MatchResult& result) {
+            auto typeName = result.Nodes.getNodeAs<clang::StringLiteral>("typeName");
+            auto integerLiteral = result.Nodes.getNodeAs<clang::IntegerLiteral>("integerLiteral");
+            auto functionDecl = result.Nodes.getNodeAs<clang::FunctionDecl>("functionDecl");
+
+            auto declAttr = functionDecl->getAttr<clang::AnnotateAttr>();
+            if (declAttr == nullptr /* || extractOffset(declAttr) != this->_versionInfo->Properties.CRC64 */)
+                return;
+
+            if (typeName->getByteLength() != integerLiteral->getValue())
+                return;
+
+            reflInfo.TypeName = typeName->getBytes();
+        });
+        crcExplorer.Run(clang::TraversalKind::TK_IgnoreUnlessSpelledInSource);
     }
 
-    // Third parameter is the base type
-    //   If not provided, 0LL is given, and Clang sees it as an IntegerLiteral, not a DeclRefExpr.
-    if (auto baseTypeParam = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(2))) {
-        auto baseFunctionDecl = [&]() -> const clang::FunctionDecl* {
-            auto itr = assignments.find(baseTypeParam->getDecl());
-            if (itr == assignments.end())
-                return nullptr;
+	// Third parameter is the base type
+	//   If not provided, 0LL is given, and Clang sees it as an IntegerLiteral, not a DeclRefExpr.
+    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 2, [&](const clang::DeclRefExpr* baseTypeParam) {
+		auto baseFunctionDecl = [&]() -> const clang::FunctionDecl* {
+			auto itr = assignments.find(baseTypeParam->getDecl());
+			if (itr == assignments.end())
+				return nullptr;
 
-            return itr->second;
-        }();
+			return itr->second;
+		}();
 
-        if (baseFunctionDecl == nullptr)
-            return;
+		if (baseFunctionDecl == nullptr)
+			return false;
 
-        auto baseTypeAttr = baseFunctionDecl->getAttr<clang::AnnotateAttr>();
-        if (baseTypeAttr == nullptr)
-            return;
+		auto baseTypeAttr = baseFunctionDecl->getAttr<clang::AnnotateAttr>();
+		if (baseTypeAttr == nullptr)
+			return false;
 
-        // Base type is stored here.
-        reflInfo.Properties[0x78] = extractOffset(baseTypeAttr);
-    }
+		// Base type is stored here.
+		reflInfo.Properties[0x78] = extractOffset(baseTypeAttr);
+        return true;
+    }))
+        return;
 
     // Fourth parameter is the function enumerating member variables
-    if (auto varEnumerator = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(3))) {
-        auto enumeratorAttr = varEnumerator->getDecl()->getAttr<clang::AnnotateAttr>();
-        if (enumeratorAttr != nullptr)
-            reflInfo.Properties[0x70] = extractOffset(enumeratorAttr);
-    }
+    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 3, [&](const clang::DeclRefExpr* varEnumerator) {
+		auto enumeratorAttr = varEnumerator->getDecl()->getAttr<clang::AnnotateAttr>();
+		if (enumeratorAttr != nullptr)
+			reflInfo.Properties[0x70] = extractOffset(enumeratorAttr);
+
+        return enumeratorAttr != nullptr;
+    }))
+        return;
 
     // And fifth parmeter depends!
     //  1. For CClass, it enumerates member functions

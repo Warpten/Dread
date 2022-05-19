@@ -218,10 +218,7 @@ BUTTON CANCEL Cancel
         }
 
 
-        { // Analyze the function calling the constructor
-            // There should only be one. We will be looking for the followwing call
-            // fn(void* this, base::global::CStrId* name, base::reflection::CType* baseType, void* pfn, void* pfn2);
-            // From there, we automatically extract `reflInfo.Self`, `reflInfo.TypeName`, and `reflInfo.BaseType`
+        { // Analyze the function calling the constructor.
             std::vector<ea_t> callers = reflCtor.GetReferencesTo(XREF_FAR);
             if (callers.size() != 1)
                 continue;
