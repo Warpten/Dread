@@ -15,6 +15,8 @@ An IDA Pro plugin to help in disassembly of Metroid Dread.
 
 ### Implementation details
 
+:warning: We recommend running this plugin on a **blank** IDB.
+
 1. Search for calls to CRC64 (the offset of which is the only hardcoded value, and specified per-binary version)
 2. For all occurences, search for (what we hereafter refer to) reflobjects constructors:  
    They should look something like this:
