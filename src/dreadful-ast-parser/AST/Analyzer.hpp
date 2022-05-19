@@ -1,18 +1,52 @@
 #pragma once
 
+#include "Explorer.hpp"
+
 #include <cstdint>
 #include <string>
 #include <type_traits>
+#include <vector>
 
+#include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/Tooling/Tooling.h>
 
-namespace clang {
-    class ASTContext;
-}
-
 namespace AST {
+	using namespace clang::ast_matchers;
+
 	struct Analyzer : private clang::DiagnosticConsumer {
 		virtual ~Analyzer() { }
+
+		std::vector<const clang::CallExpr*> CollectCallExpressions(clang::ASTContext& context) const;
+
+		template <typename U, typename T, typename = std::enable_if_t<!std::is_pointer_v<U>> >
+		auto Collect(clang::ASTContext& context, T&& matcher) const
+			-> std::vector<std::conditional_t<std::is_same_v<U, clang::DynTypedNode>, clang::DynTypedNode, const U*>>
+		{
+			if constexpr (std::is_same_v<U, clang::DynTypedNode>) {
+				std::vector<clang::DynTypedNode> collectedNodes;
+
+				Explorer explorer(context);
+				explorer.AddMatcher(matcher.bind("root"), [&](const MatchFinder::MatchResult& result) {
+					collectedNodes.push_back(result.Nodes.getNode("root"));
+				});
+				explorer.Run();
+
+				collectedNodes.shrink_to_fit();
+				return collectedNodes;
+			}
+			else {
+				std::vector<const T*> collectedNodes;
+
+				Explorer explorer{ context };
+				explorer.AddMatcher(matcher.bind("root"), [&](const MatchFinder::MatchResult& result) {
+					collectedNodes.push_back(result.Nodes.getNodeAs<T>("root"));
+				});
+				explorer.Run();
+
+				collectedNodes.shrink_to_fit();
+				return collectedNodes;
+			}
+		}
 
 		template <typename Handler>
 		auto ParsePseudoCode(Handler&& handler, std::string_view sourceCode)
@@ -41,7 +75,7 @@ namespace AST {
 					return;
 			}
 
-			return std::invoke(handler, astUnit->getASTContext());
+			return handler(astUnit->getASTContext());
 		}
 
 	public: // clang::DiagnosticConsumer

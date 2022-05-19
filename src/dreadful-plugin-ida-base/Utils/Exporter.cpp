@@ -116,9 +116,19 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
 		assembledPseudocode << '\n';
 
 		for (ea_t reference : functionInfo.GetReferencesFrom(XREF_DATA)) {
-			std::string name = get_name(reference, GN_DEMANGLED | GN_SHORT).c_str();
+			std::string name = get_name(reference, GN_DEMANGLED).c_str();
 			if (name.empty())
 				continue;
+
+			auto replaceString = [](std::string& input, std::string_view needle, std::string_view repl) {
+				size_t pos = 0;
+				while ((pos = input.find(needle, pos)) != std::string::npos) {
+					input.replace(pos, needle.length(), repl);
+					pos += repl.length();
+				}
+			};
+
+			replaceString(name, "::", "__");
 
 			// Set data type to uint64_t
 			apply_tinfo(reference, tinfo_t{ BTF_UINT64 }, TINFO_DEFINITE);
@@ -203,7 +213,6 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
 		};
 
 		replaceString(pseudocode, "&`vtable for'", "&vtable_for_");
-		replaceString(pseudocode, "::", "__");
 		replaceString(pseudocode, "__~", "__dtor_");
 
 		// Try **really** hard to get rid of casts
@@ -212,9 +221,6 @@ unsigned __int64 vtable_for_base__reflection__CCollectionType;
 			std::regex{ R"(#[0-9]+ \*)" }, "AnyType");
 		//pseudocode = std::regex_replace(pseudocode,
 		//    std::regex{ R"((\([a-z0-9_ *&]+\))(&?\*?[a-z]))" }, "$2");
-
-		// This is stupid ....
-		replaceString(pseudocode, "clang__annotate", "clang::annotate");
 
 		// This is EVEN more stupid - HexRays won't always insert casts...
 		pseudocode = std::regex_replace(pseudocode,

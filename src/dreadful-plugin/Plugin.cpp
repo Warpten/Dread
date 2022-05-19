@@ -166,26 +166,23 @@ BUTTON CANCEL Cancel
     using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
     constexpr DreadEngine checksumEngine_;
 
-    IDA::API::Message("Searching for references to {:#016x}.\n", versionInfo->Properties.CRC64);
+    IDA::API::Message("(Dread) Searching for references to CRC64 ({:#016x}).\n", versionInfo->Properties.CRC64);
     IDA::API::Function checksumFunction(versionInfo->Properties.CRC64);
 
     // TODO: Force CRC64 to uint64 (*)(const char*, size_t)
     std::unordered_map<IDA::API::Function, size_t> callers;
 
     for (ea_t callerRVA : checksumFunction.GetReferencesTo(XREF_FAR)) {
-        // callerRVA = 0x000000710000D228uLL;
-
         auto [itr, success] = callers.try_emplace(IDA::API::Function{ callerRVA }, 1);
         if (!success)
             ++itr->second;
-
-       // break;
     }
 
-    IDA::API::Message("Found {} references to CRC64.\n", callers.size());
+    IDA::API::Message("(Dread) Found {} references to CRC64.\n", callers.size());
     if (callers.empty())
         return;
 
+#if 0
     std::stringstream analysisOutput;
 	auto appendProperty = [&](std::string_view label, uint64_t value) {
 		if (value == 0)
@@ -194,6 +191,7 @@ BUTTON CANCEL Cancel
 		analysisOutput << "    constexpr static const uint64_t "
 			<< std::format("{:16} = 0x{:016x};", label, value) << '\n';
 	};
+#endif
 
     Analyzer analyzer;
     for (auto&& [reflCtor, referenceCount] : callers) {
@@ -204,14 +202,9 @@ BUTTON CANCEL Cancel
         if (reflInfo.Name.empty())
             break;
 
-        // Analyze the function corresponding to the callsite; it's the thread-safe
-        // std::call_once usage.
-        // analyzer.ProcessObject(IDA::API::Function{ callers.front() });
-
-        IDA::API::Message("Found construction of metadata for '{}' at {:#016x}.\n", reflInfo.Name, reflCtor.GetAddress());
-
+        // TODO: Is this step really necessary, given the code below?
         uint64_t fnGet = reflInfo.Properties[0x68];
-        if (fnGet != 0uLL && reflInfo.Self == 0x0uLL) {
+        if (fnGet != 0uLL) {
             // Don't bother trying to get refl object if we have it already
             IDA::API::Function getReflInfo{ fnGet };
             while (getReflInfo.IsThunk()) {
@@ -224,20 +217,25 @@ BUTTON CANCEL Cancel
             analyzer.ProcessObject(getReflInfo, reflInfo);
         }
 
-        if (reflInfo.Self == 0) {
-            // If we couldn't find it, then try by looking at callers
+
+        { // Analyze the function calling the constructor
+            // There should only be one. We will be looking for the followwing call
+            // fn(void* this, base::global::CStrId* name, base::reflection::CType* baseType, void* pfn, void* pfn2);
+            // From there, we automatically extract `reflInfo.Self`, `reflInfo.TypeName`, and `reflInfo.BaseType`
             std::vector<ea_t> callers = reflCtor.GetReferencesTo(XREF_FAR);
-            assert(callers.size() == 1);
+            if (callers.size() != 1)
+                continue;
 
             IDA::API::Function callerInfo{ callers.front() };
             analyzer.ProcessReflectionObjectConstructionCall(callerInfo, reflInfo, reflCtor.GetAddress());
         }
 
-        if (reflInfo.Self == 0) {
-            IDA::API::Message("Could not find global instance of metadata for '{}'.\n", reflInfo.Name);
+        if (reflInfo.Self == 0)
             continue;
-        }
+        
+        IDA::API::Message("(Dread) '{}': {} at {:#016x}.\n", reflInfo.TypeName, reflInfo.Name, reflInfo.Self);
 
+#if 0
 		constexpr static const std::string_view MetadataTemplate = R"(
 template <> struct Metadata<{}> {{
     constexpr static const std::string_view Name = "{}";
@@ -271,5 +269,6 @@ template <> struct Metadata<{}> {{
             reflInfo.Properties[0x60],
             reflInfo.Properties[0x70]
         );
+#endif
     }
 }

@@ -1,7 +1,8 @@
 #include "Analyzer.hpp"
 
-// ast-parser
+// dreadful-ast-parser
 #include <AST/Explorer.hpp>
+
 // dreadful-plugin-ida-base
 #include <IDA/API/Function.hpp>
 #include <Utils/Exporter.hpp>
@@ -9,8 +10,10 @@
 #include <hexrays.hpp>
 
 // std
-#include <regex>
+#include <span>
 #include <type_traits>
+#include <unordered_map>
+#include <vector>
 
 // clang
 #include <clang/ASTMatchers/ASTMatchers.h>
@@ -311,111 +314,186 @@ void Analyzer::ProcessReflectionObjectConstructionCall(IDA::API::Function const&
     }, assembledPseudocode);
 }
 
-void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
-    // This also has a return (uint64_t)&...
-    // So just reuse that
-    ProcessObject(context, functionInfo, reflInfo);
+template <typename T>
+auto ExtractArgument(const clang::Expr* arg) -> const T* {
+    if (auto declRef = clang::dyn_cast<T>(arg))
+        return declRef;
 
-    // And now for the fun part
-    std::vector<const clang::CallExpr*> callExpressions;
-    { // Dump all call expressions
-        AST::Explorer finder(context);
-        finder.AddMatcher(
-            matchers::callExpr().bind("root"),
-            [&](const matchers::MatchFinder::MatchResult& result) {
-                callExpressions.push_back(result.Nodes.getNodeAs<clang::CallExpr>("root"));
-            }
-        );
-        finder.Run();
+	if (auto unaryOperator = clang::dyn_cast<clang::UnaryOperator>(arg))
+		if (unaryOperator->getOpcode() == clang::UnaryOperatorKind::UO_AddrOf)
+			return ExtractArgument<T>(unaryOperator->getSubExpr());
+
+	if (auto castExpr = clang::dyn_cast<clang::CastExpr>(arg))
+		return ExtractArgument<T>(castExpr->getSubExpr());
+
+	if (auto constructExpr = clang::dyn_cast<clang::CXXConstructExpr>(arg)) {
+		using namespace std::string_view_literals;
+
+		if (constructExpr->getNumArgs() == 0)
+			return nullptr;
+
+		if (constructExpr->getConstructor()->getNameAsString() != "AnyType"sv)
+			return nullptr;
+
+		return ExtractArgument<T>(constructExpr->getArg(0));
+	}
+
+    if (auto memberCallExpr = clang::dyn_cast<clang::CallExpr>(arg))
+    {
+        if (memberCallExpr->getNumArgs() == 0)
+            return nullptr;
+
+        return ExtractArgument<T>(memberCallExpr->getArg(0));
     }
 
-    auto ctorCallSite = [&]() -> const clang::CallExpr* {
-        auto itr = std::find_if(callExpressions.begin(), callExpressions.end(), [&](const clang::CallExpr* callExpression) -> bool {
-            auto calleeAttr = callExpression->getCalleeDecl()->getAttr<clang::AnnotateAttr>();
-            return calleeAttr != nullptr && extractOffset(calleeAttr) == reflCtor;
+	if (auto materializeExpr = clang::dyn_cast<clang::MaterializeTemporaryExpr>(arg))
+		return ExtractArgument<T>(materializeExpr->getSubExpr());
+
+	return nullptr;
+};
+
+
+void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
+    std::unordered_set<const clang::CallExpr*> functionCalls;
+    std::unordered_map<const clang::Decl*, const clang::FunctionDecl*> assignments;
+    std::unordered_map<const clang::Decl*, const clang::CallExpr*> constructions;
+
+
+    AST::Explorer explorer(context);
+    explorer.AddMatcher(matchers::binaryOperator(
+        matchers::hasOperatorName("="),
+        matchers::hasOperands(
+            matchers::declRefExpr().bind("declRef"),
+            matchers::ignoringParenCasts(
+                matchers::hasDescendant(
+                    matchers::callExpr(
+                        matchers::callee(
+                            matchers::functionDecl(
+                                matchers::hasAttr(clang::attr::Annotate)
+                            ).bind("functionDecl")
+                        )
+                    )
+                )
+            )
+        )
+    ), [&](const matchers::MatchFinder::MatchResult& result) {
+		auto functionDecl = result.Nodes.getNodeAs<clang::FunctionDecl>("functionDecl");
+		auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
+
+        assignments.emplace(declRef->getDecl(), functionDecl);
+    });
+    explorer.AddMatcher(matchers::callExpr(
+        matchers::forFunction(
+            matchers::functionDecl(
+                matchers::hasName(functionInfo.GetName())
+            )
+        ),
+        matchers::callee(
+			matchers::functionDecl(
+				matchers::hasAttr(clang::attr::Annotate)
+			)
+        )
+    ).bind("callExpr"), [&](const matchers::MatchFinder::MatchResult& result) {
+        auto callExpr = result.Nodes.getNodeAs<clang::CallExpr>("callExpr");
+
+        functionCalls.insert(callExpr);
+
+		if (callExpr->getNumArgs() != 0) {
+			auto instanceDeclRef = ExtractArgument<clang::DeclRefExpr>(callExpr->getArg(0));
+			if (instanceDeclRef != nullptr)
+				constructions.emplace(instanceDeclRef->getDecl(), callExpr);
+		}
+    });
+    explorer.Run(clang::TraversalKind::TK_IgnoreUnlessSpelledInSource);
+
+    // Find the call site
+    auto constructorCallSite = [&]() -> const clang::CallExpr* {
+        // Identify via clang::annotate
+        auto itr = std::find_if(functionCalls.begin(), functionCalls.end(), [&](const clang::CallExpr* callExpression) -> bool {
+            if (auto calleeDecl = callExpression->getDirectCallee()) {
+				auto calleeAttr = calleeDecl->getAttr<clang::AnnotateAttr>();
+                return calleeAttr != nullptr && extractOffset(calleeAttr) == reflCtor;
+            }
+            
+            return false;
         });
 
-        if (itr != callExpressions.end())
+        if (itr != functionCalls.end())
             return *itr;
 
         return nullptr;
     }();
 
-    // If ProcessObject didn't find the global instance, do that now
-	if (reflInfo.Self == 0) {
-        // 2. Inspect arguments
-        auto thisArg = ctorCallSite->getArg(0);
-        if (auto unaryOpArg = clang::dyn_cast<clang::UnaryOperator>(thisArg)) {
-            assert(unaryOpArg->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf);
-            if (auto declRef = clang::dyn_cast<clang::DeclRefExpr>(unaryOpArg->getSubExpr())) {
-                clang::AnnotateAttr* annotationAttr = declRef->getDecl()->getAttr<clang::AnnotateAttr>();
-                if (annotationAttr != nullptr)
-                    return;
+    if (constructorCallSite == nullptr || constructorCallSite->getNumArgs() == 0)
+        return;
 
-                reflInfo.Self = extractOffset(annotationAttr);
-            }
-        }
+    // CreateReflInfo(&instance, &name, baseTypePtr, pfn1, pfn2);
+    auto instanceParameter = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(0));
+    if (instanceParameter != nullptr) {
+        auto instanceAttribute = instanceParameter->getDecl()->getAttr<clang::AnnotateAttr>();
+        if (instanceAttribute == nullptr)
+            return;
+
+        reflInfo.Self = extractOffset(instanceAttribute);
+    }
+    else {
+        return;
+    }
+    
+    auto nameParameter = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(1));
+    if (nameParameter != nullptr) {
+        auto typeNameAssignmentValue = [&]() -> const clang::CallExpr* {
+            auto typeNameConstruction = constructions.find(nameParameter->getDecl());
+            if (typeNameConstruction == constructions.end())
+                return nullptr;
+
+            return typeNameConstruction->second;
+        }();
+
+        if (typeNameAssignmentValue == nullptr)
+            return;
+
+        auto typeName = ExtractArgument<clang::StringLiteral>(typeNameAssignmentValue->getArg(1));
+        if (typeName == nullptr)
+            return;
+
+        reflInfo.TypeName = typeName->getBytes();
     }
 
-    // auto nameVarDecl = [&]() -> const clang::Decl* {
-	// 	auto nameReference = clang::dyn_cast<clang::UnaryOperator>(ctorCallSite->getArg(1));
-	// 	if (nameReference != nullptr && nameReference->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf)
-    //         return clang::dyn_cast<clang::Decl>(nameReference->getSubExpr());
-    //     return nullptr;
-    // }();
-    // 
-    // matchers::callExpr(
-    //     matchers::callee(matchers::equalsNode(ctorCallSite->getCalleeDecl())),
-    //     matchers::hasArgument(0,
-    //         matchers::declRefExpr(matchers::to(matchers::equalsNode(nameVarDecl)))
-    //     ),
-    //     matchers::hasArgument(1,
-    //         matchers::unaryOperator(
-    //             matchers::hasOperatorName("&"),
-    //             matchers::hasUnaryOperand(
-    //                 matchers::declRefExpr(matchers::to(matchers::decl().bind("nameDecl")))
-    //             )
-    //         )
-    //     )
-    // ).bind("root");
-    // 
-    // // Second argument is a DeclRefExpr to a VarDecl that is the name of the object
-    // auto nameReference = clang::dyn_cast<clang::UnaryOperator>(ctorCallSite->getArg(1));
-    // if (nameReference != nullptr && nameReference->getOpcode() == clang::UnaryOperator::Opcode::UO_AddrOf) {
-    //     auto nameDecl = clang::dyn_cast<clang::Decl>(nameReference->getSubExpr());
-    // 
-    //     // Find the assignment
-    //     matchers::MatchFinder callMatcher;
-    // 
-    //     Utils::MatchQuery query{
-    //         callMatcher,
-    //         matchers::callExpr(
-    //             matchers::callee(matchers::equalsNode(ctorCallSite->getCalleeDecl())),
-    //             matchers::argumentCountIs(3),
-    //             matchers::hasArgument(0,
-    //                 matchers::declRefExpr(matchers::to(matchers::equalsNode(nameDecl)))
-    //             ),
-    //             matchers::hasArgument(1,
-    //                 matchers::ignoringParenCasts(matchers::stringLiteral().bind("typeName"))
-    //             ),
-    //             matchers::hasArgument(2,
-    //                 matchers::ignoringParenCasts(matchers::integerLiteral(matchers::equals(1)))
-    //             )
-    //         ),
-    //         [&](const matchers::MatchFinder::MatchResult& result) {
-    //             auto typeName = result.Nodes.getNodeAs<clang::StringLiteral>("typeName");
-    // 
-    //             reflInfo.TypeName = typeName->getBytes();
-    //         }
-    //     };
-    // 
-    //     callMatcher.matchAST(context);
-    // }
-    // 
-    // // Third argument may be a local variable, which is assigned from a call, meaning this type has a base type
-    // if (auto baseTypeDeclRef = clang::dyn_cast<clang::DeclRefExpr>(ctorCallSite->getArg(2))) {
-    //     auto baseTypeDecl = clang::dyn_cast<clang::VarDecl>(baseTypeDeclRef->getDecl());
-    // }
+    // Third parameter is the base type
+    //   If not provided, 0LL is given, and Clang sees it as an IntegerLiteral, not a DeclRefExpr.
+    if (auto baseTypeParam = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(2))) {
+        auto baseFunctionDecl = [&]() -> const clang::FunctionDecl* {
+            auto itr = assignments.find(baseTypeParam->getDecl());
+            if (itr == assignments.end())
+                return nullptr;
+
+            return itr->second;
+        }();
+
+        if (baseFunctionDecl == nullptr)
+            return;
+
+        auto baseTypeAttr = baseFunctionDecl->getAttr<clang::AnnotateAttr>();
+        if (baseTypeAttr == nullptr)
+            return;
+
+        // Base type is stored here.
+        reflInfo.Properties[0x78] = extractOffset(baseTypeAttr);
+    }
+
+    // Fourth parameter is the function enumerating member variables
+    if (auto varEnumerator = ExtractArgument<clang::DeclRefExpr>(constructorCallSite->getArg(3))) {
+        auto enumeratorAttr = varEnumerator->getDecl()->getAttr<clang::AnnotateAttr>();
+        if (enumeratorAttr != nullptr)
+            reflInfo.Properties[0x70] = extractOffset(enumeratorAttr);
+    }
+
+    // And fifth parmeter depends!
+    //  1. For CClass, it enumerates member functions
+    //  2. For CEnumType, it enumerates member values
+    //  3. And god knows what else
+    // TODO: Write the code for this
 }
 
 void Analyzer::HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) {

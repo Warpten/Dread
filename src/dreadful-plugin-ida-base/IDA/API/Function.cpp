@@ -156,9 +156,57 @@ namespace IDA::API {
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
 
 		for (simpleline_t line : pseudocodeLines) {
+			// Dynamically remove semicolons unless they are within a string
+#if 1
+			bool fixSemicolons = true;
+
+			const char* cursor = line.line.c_str();
+
+			while (*cursor != 0) {
+				switch (*cursor) {
+					case COLOR_ON:
+					{
+						char colorCode = *(cursor + 1);
+						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
+							fixSemicolons = false;
+
+						cursor = tag_skipcode(cursor);
+						break;
+					}
+					case COLOR_OFF:
+					{
+						char colorCode = *(cursor + 1);
+						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
+							fixSemicolons = true;
+
+						cursor = tag_skipcode(cursor);
+						break;
+					}
+					case COLOR_ESC:
+						cursor = tag_skipcode(cursor);
+						break;
+					case COLOR_INV:
+						cursor = tag_skipcode(cursor);
+						break;
+					case ':':
+						stream << (fixSemicolons ? '_' : ':');
+						++cursor;
+						break;
+					case '"':
+						fixSemicolons ^= true;
+						[[fallthrough]];
+					default:
+						stream << *cursor;
+						++cursor;
+						break;
+				}
+			}
+			stream << '\n';
+#else
 			tag_remove(&line.line, 0);
 
 			stream << line.line.c_str() << '\n';
+#endif
 		}
 	}
 
@@ -186,29 +234,27 @@ namespace IDA::API {
 
 			xrefblk_t block;
 			for (bool hasMoreData = block.first_from(fnItem, XREF_ALL); hasMoreData; hasMoreData = block.next_from()) {
-				if (xrefFlags == XREF_ALL || (xrefFlags == XREF_FAR && block.iscode && !function->contains(block.to)))
+				auto filter = [&block, &function, &xrefFlags](ea_t addr) {
+					flags_t flags = get_full_flags(addr);
+
+					if (!(xrefFlags & XREF_DATA) && is_func(flags))
+						return true;
+
+					if (!(xrefFlags & XREF_FAR) && is_data(flags))
+						return true;
+
+					return false;
+				};
+
+				if (filter(block.to))
 					crossReferences.insert(block.to);
 
-				{
-					// Read value at offset, if it's a pointer to code, store the reference
-					// Same if it's data and we want that
-					uint64_t value = get_qword(block.to);
-					flags_t flags = get_full_flags(value);
-					if (is_code(flags) && is_func(flags)) {
-						if (xrefFlags != XREF_DATA) {
-							// Don't store xrefs to our own code
-							if (!function->contains(value))
-								crossReferences.insert(value);
-						}
-					}
-					else {
-						if (xrefFlags != XREF_FAR)
-							crossReferences.insert(value);
-					}
-				}
+				uint64_t value = get_qword(block.to);
+				if (filter(value))
+					crossReferences.insert(value);
 			}
 
-			success = itr.next_code();
+			success = itr.next_addr();
 		}
 
 		return crossReferences;
