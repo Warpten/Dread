@@ -159,6 +159,7 @@ namespace IDA::API {
 			// Dynamically remove semicolons unless they are within a string
 #if 1
 			bool fixSemicolons = true;
+			bool withinSymbolContext = false;
 
 			const char* cursor = line.line.c_str();
 
@@ -169,6 +170,12 @@ namespace IDA::API {
 						char colorCode = *(cursor + 1);
 						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
 							fixSemicolons = false;
+						else if (colorCode == COLOR_HIDNAME) {
+							withinSymbolContext = true;
+							// For some abscond reason, parentheses are tagged as COLOR_SYMBOL.
+							// Manually remove them (by just seeking backwards)
+							stream.seekp(-1, std::ios::cur);
+						}
 
 						cursor = tag_skipcode(cursor);
 						break;
@@ -176,10 +183,19 @@ namespace IDA::API {
 					case COLOR_OFF:
 					{
 						char colorCode = *(cursor + 1);
-						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
-							fixSemicolons = true;
 
 						cursor = tag_skipcode(cursor);
+
+						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
+							fixSemicolons = true;
+						else if (colorCode == COLOR_HIDNAME) {
+							withinSymbolContext = false;
+							// Counterpart of the above (in COLOR_ON). Here the closing parenthesis
+							// hasn't been written yet, so we immediately skip over it)
+							cursor = tag_skipcode(cursor);
+							assert(*cursor == ')');
+							++cursor; // Also important, the line above skips the tagcode, not the character
+						}
 						break;
 					}
 					case COLOR_ESC:
@@ -196,7 +212,9 @@ namespace IDA::API {
 						fixSemicolons ^= true;
 						[[fallthrough]];
 					default:
-						stream << *cursor;
+						if (!withinSymbolContext)
+							stream << *cursor;
+
 						++cursor;
 						break;
 				}
