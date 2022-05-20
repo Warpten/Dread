@@ -195,12 +195,15 @@ BUTTON CANCEL Cancel
 
     Analyzer analyzer;
     for (auto&& [reflCtor, referenceCount] : callers) {
+        if (reflCtor.GetAddress() != 0x000071001669bcuLL)
+            continue;
+
         if (referenceCount != 1)
-            break;
+            continue;
 
         Analyzer::ReflInfo reflInfo = analyzer.ProcessReflectionObjectConstruction(reflCtor);
         if (reflInfo.Name.empty())
-            break;
+            continue;
 
         // TODO: Is this step really necessary, given the code below?
         uint64_t fnGet = reflInfo.Properties[0x68];
@@ -227,8 +230,10 @@ BUTTON CANCEL Cancel
             analyzer.ProcessReflectionObjectConstructionCall(callerInfo, reflInfo, reflCtor.GetAddress());
         }
 
-        if (reflInfo.Self == 0)
+        if (reflInfo.Self == 0) {
+            IDA::API::Message("(Dread) Analysis failed, starting at {:#016x}.\n", reflCtor.GetAddress());
             continue;
+        }
         
         IDA::API::Message("(Dread) '{}': {} at {:#016x}.\n", reflInfo.TypeName, reflInfo.Name, reflInfo.Self);
 
