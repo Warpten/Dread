@@ -5,6 +5,7 @@
 
 // dreadful-plugin-ida-base
 #include <IDA/API/Function.hpp>
+#include <IDA/API.hpp>
 #include <Utils/Exporter.hpp>
 
 #include <hexrays.hpp>
@@ -349,7 +350,7 @@ auto ExtractArgument(const clang::Expr* arg) -> const T* {
 
 template <typename T, typename Fn>
 auto ProcessParameter(const clang::CallExpr* callSite, size_t index, Fn&& fn) {
-	if (callSite == nullptr || callSite->getNumArgs() < index)
+	if (callSite == nullptr || callSite->getNumArgs() <= index)
 		return false;
 
 	auto parameter = ExtractArgument<T>(callSite->getArg(index));
@@ -361,9 +362,9 @@ auto ProcessParameter(const clang::CallExpr* callSite, size_t index, Fn&& fn) {
 
 
 void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
-    std::unordered_set<const clang::CallExpr*> functionCalls;
+    std::unordered_map<uint64_t, const clang::CallExpr*> functionCalls;
     std::unordered_map<const clang::Decl*, const clang::FunctionDecl*> assignments;
-    std::unordered_map<const clang::Decl*, const clang::CallExpr*> constructions;
+    std::multimap<const clang::Decl*, const clang::CallExpr*> constructions;
 
     AST::Explorer explorer(context);
     explorer.AddMatcher(matchers::binaryOperator(
@@ -402,7 +403,11 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
     ).bind("callExpr"), [&](const matchers::MatchFinder::MatchResult& result) {
         auto callExpr = result.Nodes.getNodeAs<clang::CallExpr>("callExpr");
 
-        functionCalls.insert(callExpr);
+		if (auto calleeDecl = callExpr->getDirectCallee()) {
+			auto calleeAttr = calleeDecl->getAttr<clang::AnnotateAttr>();
+
+            functionCalls.emplace(extractOffset(calleeAttr), callExpr);
+		}
 
 		if (callExpr->getNumArgs() != 0) {
 			auto instanceDeclRef = ExtractArgument<clang::DeclRefExpr>(callExpr->getArg(0));
@@ -415,17 +420,9 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
     // Find the call site
     auto constructorCallSite = [&]() -> const clang::CallExpr* {
         // Identify via clang::annotate
-        auto itr = std::find_if(functionCalls.begin(), functionCalls.end(), [&](const clang::CallExpr* callExpression) -> bool {
-            if (auto calleeDecl = callExpression->getDirectCallee()) {
-				auto calleeAttr = calleeDecl->getAttr<clang::AnnotateAttr>();
-                return calleeAttr != nullptr && extractOffset(calleeAttr) == reflCtor;
-            }
-            
-            return false;
-        });
-
+        auto itr = functionCalls.find(reflCtor);
         if (itr != functionCalls.end())
-            return *itr;
+            return itr->second;
 
         return nullptr;
     }();
@@ -444,7 +441,7 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
 
     if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 1, [&](const clang::DeclRefExpr* nameParameter) {
         auto typeNameAssignmentValue = [&]() -> const clang::CallExpr* {
-            auto typeNameConstruction = constructions.find(nameParameter->getDecl());
+            auto typeNameConstruction = constructions.upper_bound(nameParameter->getDecl());
             if (typeNameConstruction == constructions.end())
                 return nullptr;
 
@@ -531,5 +528,10 @@ void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& contex
 }
 
 void Analyzer::HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) {
+#if _DEBUG
+    llvm::SmallVector<char, 128> Message;
+    info.FormatDiagnostic(Message);
 
+    IDA::API::Message("(Dread) {}.\n", std::string_view{ Message.data(), Message.size() });
+#endif
 }
