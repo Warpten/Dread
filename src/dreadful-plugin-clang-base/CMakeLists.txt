@@ -27,7 +27,7 @@ message(STATUS "Linking with LLVM binaries: ${llvm_libs}")
 message(STATUS "Linking with Clang binaries: ${CLANG_LIBS}")
 
 # Declare target
-add_library(dreadful-ast-parser
+add_library(dreadful-plugin-clang-base
   STATIC
     ${PRIVATE_SOURCES}
 )
@@ -36,7 +36,7 @@ CollectIncludeDirectories(${CMAKE_CURRENT_SOURCE_DIR}
   PUBLIC_INCLUDES
 )
 
-target_include_directories(dreadful-ast-parser
+target_include_directories(dreadful-plugin-clang-base
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${LLVM_INCLUDE_DIRS}
@@ -45,7 +45,7 @@ target_include_directories(dreadful-ast-parser
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-target_link_libraries(dreadful-ast-parser 
+target_link_libraries(dreadful-plugin-clang-base 
   PRIVATE
     ${llvm_libs} 
     clangAST 
@@ -54,11 +54,11 @@ target_link_libraries(dreadful-ast-parser
     clangTooling
 )
 
-target_compile_options(dreadful-ast-parser
+target_compile_options(dreadful-plugin-clang-base
   PUBLIC
     "$<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>"
     "$<$<CXX_COMPILER_ID:MSVC>:/wd4624>" # warning C4624: 'identifier': destructor was implicitly defined as deleted
     "$<$<CXX_COMPILER_ID:MSVC>:/wd4291>" # warning C4291: 'identifier': no matching operator delete found; memory will not be freed if initialization throws an exception
 )
 
-target_compile_features(dreadful-ast-parser PUBLIC cxx_std_20)
+target_compile_features(dreadful-plugin-clang-base PUBLIC cxx_std_20)

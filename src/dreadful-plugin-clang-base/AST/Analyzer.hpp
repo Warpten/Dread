@@ -56,7 +56,7 @@ namespace AST {
 			using namespace std::string_literals;
 
 			auto astUnit = tooling::buildASTFromCodeWithArgs(sourceCode,
-				{ "-std=c++20"s, "-fsyntax-only"s },
+				{ "-std=c++20"s, "-fsyntax-only"s, "-Wno-writable-strings"s },
 				"disassembly.cpp",
 				"dread-tool"s,
 				std::make_shared<PCHContainerOperations>(),

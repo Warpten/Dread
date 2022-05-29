@@ -15,6 +15,14 @@ target_compile_definitions(dreadful-plugin-ida-base
     IDA_INCLUDE_DIR="${IDA_LIB_DIR}"
 )
 
+add_dependencies(dreadful-plugin-clang-base
+  dreadful-plugin-shared-base
+)
+
+target_link_libraries(dreadful-plugin-ida-base
+  PUBLIC
+    dreadful-plugin-shared-base
+)
 
 target_include_directories(dreadful-plugin-ida-base
   PUBLIC

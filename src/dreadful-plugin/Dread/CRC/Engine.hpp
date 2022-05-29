@@ -6,7 +6,7 @@
 #include <string_view>
 #include <type_traits>
 
-namespace CRC {
+namespace Dread::CRC {
 	template <auto Seed, auto Polynomial, auto FinalXor, bool ReflectInput, bool ReflectResult>
 	struct Engine {
 		using value_type = std::common_type_t<decltype(Seed), decltype(Polynomial), decltype(FinalXor)>;
@@ -65,4 +65,6 @@ namespace CRC {
 	private:
 		std::array<value_type, 256> _lookupTable;
 	};
+
+	using DefaultEngine = Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
 }

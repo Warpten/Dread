@@ -30,6 +30,8 @@ namespace IDA::API {
 
 		void ModifyType(std::function<void(tinfo_t&, size_t)> transform) const;
 
+		void IterateLocals(std::function<void(lvar_t&)> callback) const;
+
 		/// <summary>
 		/// Decompiles the function. Returns the decompiled pseudocode.
 		/// Throws <see cref="DecompilationException" /> if decompilation fails.

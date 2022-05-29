@@ -31,4 +31,14 @@ namespace IDA::API {
 	bool Type::IsStruct() const {
 		return _type.is_struct();
 	}
+
+	size_t Type::GetSize() const {
+		return _type.get_size();
+	}
+
+	/* static */ Type Type::Of(uint64_t rva) {
+		tinfo_t type;
+		guess_tinfo(&type, rva);
+		return Type{ type };
+	}
 }

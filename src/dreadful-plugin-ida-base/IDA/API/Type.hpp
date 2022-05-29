@@ -18,6 +18,9 @@ namespace IDA::API {
 
 		std::string ToString() const;
 
+		size_t GetSize() const;
+
+		static Type Of(uint64_t rva);
 
 	private:
 		tinfo_t _type;

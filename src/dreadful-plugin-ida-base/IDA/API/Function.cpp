@@ -1,9 +1,53 @@
 #include "DecompilationException.hpp"
 #include "Function.hpp"
 
+#include <charconv>
 #include <regex>
 #include <set>
+#include <stack>
 #include <unordered_set>
+
+auto get_tinfo_from_cfunc_t(ea_t rva) {
+	func_t* function = get_func(rva);
+	assert(function != nullptr);
+
+	hexrays_failure_t failure;
+	cfuncptr_t functionPointer = decompile(function, &failure,
+		DECOMP_NO_WAIT | DECOMP_NO_CACHE | DECOMP_NO_XREFS | DECOMP_NO_FRAME);
+	if (failure.code != merror_t::MERR_OK)
+		throw IDA::API::DecompilationException(failure.code, failure.errea, failure.desc().c_str());
+
+	tinfo_t tif;
+	bool success = functionPointer->get_func_type(&tif);
+	if (!success)
+		throw IDA::API::DecompilationException(failure.code, failure.errea, failure.desc().c_str());
+
+	return tif;
+};
+
+auto get_func_type_data(ea_t rva) {
+	tinfo_t functionInfo = get_tinfo_from_cfunc_t(rva);
+
+	func_type_data_t functionData;
+	bool success = functionInfo.get_func_details(&functionData);
+	assert(success);
+
+	return functionData;
+}; 
+
+auto get_cfunc_t(ea_t rva) {
+	func_t* function = get_func(rva);
+	assert(function != nullptr);
+
+	hexrays_failure_t failure;
+	cfuncptr_t functionPointer = decompile(function, &failure,
+		DECOMP_NO_WAIT | DECOMP_NO_CACHE | DECOMP_NO_XREFS | DECOMP_NO_FRAME);
+	if (failure.code != merror_t::MERR_OK)
+		throw IDA::API::DecompilationException(failure.code, failure.errea, failure.desc().c_str());
+
+	assert(functionPointer != nullptr);
+	return functionPointer;
+}
 
 namespace IDA::API {
 	bool operator == (Function const& left, Function const& right) {
@@ -30,34 +74,6 @@ namespace IDA::API {
 
 		return (function->flags & FUNC_THUNK) != 0;
 	}
-
-	const auto get_tinfo_from_cfunc_t = [](ea_t rva) {
-		func_t* function = get_func(rva);
-		assert(function != nullptr);
-
-		hexrays_failure_t failure;
-		cfuncptr_t functionPointer = decompile(function, &failure,
-			DECOMP_NO_WAIT | DECOMP_NO_CACHE | DECOMP_NO_XREFS | DECOMP_NO_FRAME);
-		if (failure.code != merror_t::MERR_OK)
-			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
-
-		tinfo_t tif;
-		bool success = functionPointer->get_func_type(&tif);
-		if (!success)
-			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
-
-		return tif;
-	};
-
-	const auto get_func_type_data = [](ea_t rva) {
-		tinfo_t functionInfo = get_tinfo_from_cfunc_t(rva);
-
-		func_type_data_t functionData;
-		bool success = functionInfo.get_func_details(&functionData);
-		assert(success);
-
-		return functionData;
-	};
 
 	Type Function::GetReturnType() const {
 		func_type_data_t functionData = get_func_type_data(_rva);
@@ -94,6 +110,14 @@ namespace IDA::API {
 			ss << ' ' << GetArgumentType(i).ToString();
 		ss << " }";
 		return ss.str();
+	}
+
+	void Function::IterateLocals(std::function<void(lvar_t&)> callback) const {
+		auto funcPtr = get_cfunc_t(_rva);
+		assert(funcPtr != nullptr);
+
+		for (size_t i = 0; i < funcPtr->get_lvars()->size(); ++i)
+			callback(funcPtr->get_lvars()->at(i));
 	}
 
 	void Function::ModifyType(std::function<void(tinfo_t&, size_t)> transform) const {
@@ -137,16 +161,7 @@ namespace IDA::API {
 	}
 
 	void Function::Decompile(std::ostream& stream, std::function<void(cfunc_t&)> filter /* = nullptr*/) const {
-		func_t* function = get_func(_rva);
-		assert(function != nullptr);
-
-		hexrays_failure_t failure;
-		cfuncptr_t functionPointer = decompile(function, &failure,
-			DECOMP_NO_WAIT | DECOMP_NO_CACHE | DECOMP_NO_XREFS | DECOMP_NO_FRAME);
-		if (failure.code != merror_t::MERR_OK)
-			throw DecompilationException(failure.code, failure.errea, failure.desc().c_str());
-
-		assert(functionPointer != nullptr);
+		cfuncptr_t functionPointer = get_cfunc_t(_rva);
 
 		if (filter != nullptr)
 			filter(*functionPointer);
@@ -156,63 +171,84 @@ namespace IDA::API {
 		const strvec_t& pseudocodeLines = functionPointer->get_pseudocode();
 
 		for (simpleline_t line : pseudocodeLines) {
-			// Dynamically remove semicolons unless they are within a string
-#if 1
-			bool fixSemicolons = true;
-			bool withinSymbolContext = false;
+			// Dynamically remove colons unless they are within a string
+			bool fixColons = true;
+			bool canPrintCharacter = true;
+			int32_t parenthesisStack = 0;
+			bool isCurrentCodeEscaped = false;
 
 			const char* cursor = line.line.c_str();
 
 			while (*cursor != 0) {
+				if (isCurrentCodeEscaped) {
+					// Shortcircuit if escaped, append, move ahead, and reset
+					stream << *cursor;
+					++cursor;
+					isCurrentCodeEscaped = false;
+
+					continue;
+				}
+
 				switch (*cursor) {
 					case COLOR_ON:
 					{
 						char colorCode = *(cursor + 1);
-						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
-							fixSemicolons = false;
-						else if (colorCode == COLOR_HIDNAME) {
-							withinSymbolContext = true;
+						cursor = tag_skipcode(cursor);
+
+						if (colorCode == COLOR_HIDNAME) {
+							canPrintCharacter = false;
+
 							// For some abscond reason, parentheses are tagged as COLOR_SYMBOL.
 							// Manually remove them (by just seeking backwards)
-							stream.seekp(-1, std::ios::cur);
+							if (parenthesisStack > 1)
+								stream.seekp(-1, std::ios::cur);
 						}
 
-						cursor = tag_skipcode(cursor);
 						break;
 					}
 					case COLOR_OFF:
 					{
 						char colorCode = *(cursor + 1);
-
 						cursor = tag_skipcode(cursor);
 
-						if (colorCode == COLOR_STRING || colorCode == COLOR_DSTR)
-							fixSemicolons = true;
-						else if (colorCode == COLOR_HIDNAME) {
-							withinSymbolContext = false;
+						if (colorCode == COLOR_HIDNAME) {
+							canPrintCharacter = true;
+
 							// Counterpart of the above (in COLOR_ON). Here the closing parenthesis
-							// hasn't been written yet, so we immediately skip over it)
-							cursor = tag_skipcode(cursor);
-							assert(*cursor == ')');
-							++cursor; // Also important, the line above skips the tagcode, not the character
+							// hasn't been written yet, so we immediately skip over it.
+							if (parenthesisStack > 1) {
+								cursor = tag_skipcode(cursor);
+
+								// And finally skip the parenthesis.
+								assert(*cursor == ')');
+								++cursor;
+							}
 						}
 						break;
 					}
 					case COLOR_ESC:
-						cursor = tag_skipcode(cursor);
+						isCurrentCodeEscaped = true;
+						++cursor;
 						break;
 					case COLOR_INV:
 						cursor = tag_skipcode(cursor);
 						break;
+					case '(':
+						++parenthesisStack;
+						goto DEFAULT_CASE; // Sue me
+					case ')':
+						--parenthesisStack;
+						goto DEFAULT_CASE; // Sue me
 					case ':':
-						stream << (fixSemicolons ? '_' : ':');
+						stream << (fixColons ? '_' : ':');
 						++cursor;
 						break;
 					case '"':
-						fixSemicolons ^= true;
+						fixColons ^= true;
 						[[fallthrough]];
 					default:
-						if (!withinSymbolContext)
+					DEFAULT_CASE:
+						if (canPrintCharacter || parenthesisStack <= 1)
 							stream << *cursor;
 
 						++cursor;
@@ -220,11 +256,6 @@ namespace IDA::API {
 				}
 			}
 			stream << '\n';
-#else
-			tag_remove(&line.line, 0);
-
-			stream << line.line.c_str() << '\n';
-#endif
 		}
 	}
 
@@ -245,7 +276,7 @@ namespace IDA::API {
 
 		std::unordered_set<ea_t> crossReferences;
 
-		func_item_iterator_t itr;
+        func_item_iterator_t itr;
 		bool success = itr.set(function);
 		while (success) {
 			ea_t fnItem = itr.current();
@@ -254,7 +285,6 @@ namespace IDA::API {
 			for (bool hasMoreData = block.first_from(fnItem, XREF_ALL); hasMoreData; hasMoreData = block.next_from()) {
 				auto filter = [&block, &function, &xrefFlags](ea_t addr) {
 					flags_t flags = get_full_flags(addr);
-
 					if (!(xrefFlags & XREF_DATA) && is_func(flags))
 						return true;
 
@@ -275,6 +305,61 @@ namespace IDA::API {
 
 			success = itr.next_addr();
 		}
+
+		// Unfortunately there are situations where IDA will fail to see data references
+		// ADRL  X19, qword_7101CF3DC8
+		// ADRL  X1,  aSources; "sources"
+		// MOV   X0,  X19; int
+		// MOV   W2,  #1
+		// BL    sub_71000003D4
+		// ADRP  X20, #off_7101C627A8@PAGE
+		// LDR   X20, [X20, #off_7101C627A8@PAGEOFF]
+		// ADRL  X21, off_71019C3000
+		// MOV   X2,  X21
+		// MOV   X0,  X20
+		// MOV   X1,  X19
+		// BL    sub_7100000250
+		// ADD   X22, X19, #8 <-- This is X22 = &qword_7101CF3DC8 + 8
+		//                                  Which Hex-Rays will show as &qword_7101CF3DD0
+		// The only sort of reliable way to find these is to look through the ctree ... which we do.
+		cfuncptr_t functionPointer = get_cfunc_t(_rva);
+
+		// Do not attempt to fix casts and ctree text; just look through the lines
+
+		struct ctree_visitor : public ctree_visitor_t {
+			explicit ctree_visitor(int xrefFlags, std::unordered_set<uint64_t>& references) 
+				: ctree_visitor_t(CV_FAST), _xrefFlags(xrefFlags) , _crossReferences(references)
+			{ }
+			
+			int idaapi visit_expr(cexpr_t* expression) override {
+				if (expression->op == ctype_t::cot_obj)
+					processOne(expression);
+
+				return 0;
+			}
+
+		private:
+			bool processOne(cexpr_t* expr) {
+				uint64_t objectAddress = expr->obj_ea;
+				uint64_t objectFlags = get_full_flags(objectAddress);
+
+				if (is_func(objectFlags) && _xrefFlags != XREF_DATA) {
+					_crossReferences.emplace(objectAddress);
+					return true;
+				} else if ((is_data(objectFlags) || is_unknown(objectFlags)) && _xrefFlags != XREF_FAR) {
+					_crossReferences.emplace(objectAddress);
+					return true;
+				}
+
+				return false;
+			};
+
+
+			int _xrefFlags;
+			std::unordered_set<uint64_t>& _crossReferences;
+		} visitor(xrefFlags, crossReferences);
+
+		visitor.apply_to(&functionPointer->body, nullptr);
 
 		return crossReferences;
 	}

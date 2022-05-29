@@ -4,11 +4,6 @@ CollectSourceFiles(
   # Exclude
 )
 
-CollectIncludeDirectories(
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  PUBLIC_INCLUDES
-)
-
 GroupSources(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Declare both targets
@@ -17,7 +12,7 @@ add_ida_plugin(dreadful-plugin
 )
 
 add_dependencies(dreadful-plugin
-  dreadful-ast-parser
+  dreadful-plugin-clang-base
   dreadful-plugin-ida-base
 )
 
@@ -31,7 +26,7 @@ target_include_directories(dreadful-plugin
 target_link_libraries(dreadful-plugin
   PRIVATE
     dreadful-plugin-ida-base
-    dreadful-ast-parser
+    dreadful-plugin-clang-base
 )
 
 target_compile_features(dreadful-plugin

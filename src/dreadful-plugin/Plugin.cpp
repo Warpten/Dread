@@ -2,14 +2,13 @@
 #pragma warning(disable : 4267 4244)
 #define USE_STANDARD_FILE_FUNCTIONS
 #include <hexrays.hpp>
-#include <funcs.hpp>
-#include <xref.hpp>
-#include <struct.hpp>
 #include <loader.hpp>
 #pragma warning(pop)
 
 #include "Analyzer.hpp"
-#include "Dread/CRC.hpp"
+#include "Dread/CRC/Engine.hpp"
+#include "Dread/Reflection/ReflInfo.hpp"
+
 #include <IDA/API.hpp>
 #include <IDA/API/Function.hpp>
 
@@ -163,8 +162,7 @@ BUTTON CANCEL Cancel
         return;
 
     // Corresponds to the game's CRC engine.
-    using DreadEngine = CRC::Engine<0xFFFF'FFFF'FFFF'FFFFuLL, 0x42F0'E1BE'A9EA'3693uLL, 0x0uLL, true, true>;
-    constexpr DreadEngine checksumEngine_;
+    static constexpr Dread::CRC::DefaultEngine checksumEngine_;
 
     IDA::API::Message("(Dread) Searching for references to CRC64 ({:#016x}).\n", versionInfo->Properties.CRC64);
     IDA::API::Function checksumFunction(versionInfo->Properties.CRC64);
@@ -193,6 +191,8 @@ BUTTON CANCEL Cancel
 	};
 #endif
 
+    using namespace Dread::Reflection;
+
     Analyzer analyzer;
     for (auto&& [reflCtor, referenceCount] : callers) {
         if (reflCtor.GetAddress() != 0x000071001669bcuLL)
@@ -201,41 +201,9 @@ BUTTON CANCEL Cancel
         if (referenceCount != 1)
             continue;
 
-        Analyzer::ReflInfo reflInfo = analyzer.ProcessReflectionObjectConstruction(reflCtor);
-        if (reflInfo.Name.empty())
+        auto dynTypedInfo = analyzer.Identify(reflCtor);
+        if (!dynTypedInfo)
             continue;
-
-        // TODO: Is this step really necessary, given the code below?
-        uint64_t fnGet = reflInfo.Properties[0x68];
-        if (fnGet != 0uLL) {
-            // Don't bother trying to get refl object if we have it already
-            IDA::API::Function getReflInfo{ fnGet };
-            while (getReflInfo.IsThunk()) {
-                std::unordered_set<ea_t> calledFunctions = getReflInfo.GetReferencesFrom(XREF_FAR);
-                assert(calledFunctions.size() == 1);
-
-                getReflInfo = IDA::API::Function{ *calledFunctions.begin() };
-            }
-
-            analyzer.ProcessObject(getReflInfo, reflInfo);
-        }
-
-
-        { // Analyze the function calling the constructor.
-            std::vector<ea_t> callers = reflCtor.GetReferencesTo(XREF_FAR);
-            if (callers.size() != 1)
-                continue;
-
-            IDA::API::Function callerInfo{ callers.front() };
-            analyzer.ProcessReflectionObjectConstructionCall(callerInfo, reflInfo, reflCtor.GetAddress());
-        }
-
-        if (reflInfo.Self == 0) {
-            IDA::API::Message("(Dread) Analysis failed, starting at {:#016x}.\n", reflCtor.GetAddress());
-            continue;
-        }
-        
-        IDA::API::Message("(Dread) '{}': {} at {:#016x}.\n", reflInfo.TypeName, reflInfo.Name, reflInfo.Self);
 
 #if 0
 		constexpr static const std::string_view MetadataTemplate = R"(

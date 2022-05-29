@@ -1,7 +1,11 @@
 #include "Analyzer.hpp"
+#include "Dread/CRC/Engine.hpp"
+#include "Dread/Reflection/ReflInfo.hpp"
+#include "Dread/Utilities.hpp"
 
-// dreadful-ast-parser
+// dreadful-plugin-clang-base
 #include <AST/Explorer.hpp>
+#include <AST/Matchers.hpp>
 
 // dreadful-plugin-ida-base
 #include <IDA/API/Function.hpp>
@@ -12,6 +16,7 @@
 
 // std
 #include <span>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -19,12 +24,26 @@
 // clang
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ASTMatchers/ASTMatchersInternal.h>
+#include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/Tooling/Tooling.h>
 
 using namespace clang;
-namespace matchers = clang::ast_matchers;
+using namespace clang::ast_matchers;
+using namespace clang::ast_matchers::internal;
+
+namespace {
+    template <typename T>
+    void ExecuteOne(ASTContext& context, Matcher<T> const& matcher, AST::Explorer::Callback&& action) {
+        AST::Explorer explorer(context);
+        explorer.AddMatcher(matcher, std::move(action));
+        explorer.Run(clang::TK_IgnoreUnlessSpelledInSource);
+    }
+}
 
 auto extractOffset(clang::AnnotateAttr* attribute) -> uint64_t {
+    if (attribute == nullptr)
+        return 0uLL;
+
 	llvm::StringRef annotation{ attribute->getAnnotation() };
 	if (!annotation.startswith("0x"))
 		return 0uLL;
@@ -37,494 +56,221 @@ auto extractOffset(clang::AnnotateAttr* attribute) -> uint64_t {
 	return offsetValue;
 };
 
-const matchers::internal::VariadicDynCastAllOfMatcher<clang::Expr, clang::RecoveryExpr> recoveryExpr;
+auto extractOffset(const clang::Decl* decl) -> uint64_t {
+	if (decl == nullptr)
+		return 0uLL;
 
-auto Analyzer::ProcessReflectionObjectConstruction(IDA::API::Function const& functionInfo)
-    -> ReflInfo
-{
-	std::string assembledPseudocode = [&] {
-		std::stringstream strm;
-		Utils::Exporter exporter(strm);
-		exporter.Run(functionInfo, [](tinfo_t& argType) {
-			argType = tinfo_t{ BTF_VOID };
-        });
-
-		return strm.str();
-	}();
-
-    return ParsePseudoCode([this, &functionInfo](clang::ASTContext& context) -> ReflInfo {
-        return this->ProcessReflectionObjectConstruction(context, functionInfo);
-    }, assembledPseudocode);
-}
-
-auto Analyzer::ProcessReflectionObjectConstruction(clang::ASTContext& context, IDA::API::Function const& functionInfo)
-    -> ReflInfo
-{
-	ReflInfo reflInfo;
-    // Scope query segment to limit results to the function being decompiled
-    //   Probably overkill, but just in case plugins/defs.h does wonky stuff.
-	auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
-    AST::Explorer matchFinder(context);
-    matchFinder.AddMatcher(
-        matchers::callExpr(
-            scopeQuery,
-            matchers::hasArgument(0, matchers::hasDescendant(matchers::stringLiteral().bind("stringLiteral"))),
-            matchers::hasArgument(1, matchers::hasDescendant(matchers::integerLiteral().bind("integerLiteral")))
-        ),
-        [&](const matchers::MatchFinder::MatchResult& result) {
-            auto stringLiteral = result.Nodes.getNodeAs<clang::StringLiteral>("stringLiteral");
-            auto integerLiteral = result.Nodes.getNodeAs<clang::IntegerLiteral>("integerLiteral");
-
-            if (stringLiteral->getByteLength() != integerLiteral->getValue())
-                return;
-
-            reflInfo.Name = stringLiteral->getBytes();
-        }
-    );
-
-    //< Handle vtable assignment.
-    matchFinder.AddMatcher(
-        matchers::binaryOperator(
-            scopeQuery,
-            matchers::hasOperatorName("="),
-            matchers::hasOperands(
-                matchers::declRefExpr().bind("this"),
-                matchers::cStyleCastExpr(matchers::hasSourceExpression(
-                    matchers::unaryOperator(matchers::declRefExpr().bind("declRef"))
-                ))
-            )
-        ),
-        [&](const matchers::MatchFinder::MatchResult& result) {
-            auto instance = result.Nodes.getNodeAs<clang::DeclRefExpr>("this");
-            auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
-
-            const clang::ValueDecl* instanceDeclaration = declRef->getDecl();
-            if (clang::AnnotateAttr* annotationAttribute = instanceDeclaration->getAttr<clang::AnnotateAttr>())
-                reflInfo.Self = extractOffset(annotationAttribute);
-
-            const clang::ValueDecl* vtableDeclaration = declRef->getDecl();
-            if (clang::AnnotateAttr* annotationAttribute = vtableDeclaration->getAttr<clang::AnnotateAttr>())
-                reflInfo.Properties[0x00] = extractOffset(annotationAttribute);
-        }
-    );
-
-    auto optionallyCastExpr = [](std::string_view castBind, auto&& query) {
-        return matchers::anyOf(
-            query,
-            matchers::castExpr(matchers::hasSourceExpression(query)).bind(castBind)
-        );
-    };
-
-    matchFinder.AddMatcher(
-        matchers::binaryOperator(
-	        matchers::hasOperatorName("="),
-	        matchers::hasOperands(
-		        matchers::unaryOperator(
-			        matchers::hasOperatorName("*"),
-			        matchers::hasUnaryOperand(
-                        optionallyCastExpr("castProp", 
-							matchers::ignoringParens(
-								matchers::binaryOperator(
-									matchers::hasOperatorName("+"),
-									matchers::hasOperands(
-                                        optionallyCastExpr("castDeclRef",
-                                            matchers::anyOf(
-											    matchers::declRefExpr().bind("declRef"),
-                                                matchers::unaryOperator(
-                                                    matchers::hasOperatorName("&"),
-                                                    matchers::hasUnaryOperand(
-                                                        matchers::declRefExpr().bind("declRef")
-                                                    )
-                                                )
-                                            )
-										),
-										matchers::ignoringParenCasts(
-											matchers::integerLiteral().bind("offset")
-										)
-									)
-								)
-							)
-				        )
-			        )
-		        ),
-		        matchers::anyOf(
-			        matchers::ignoringParenCasts(
-				        matchers::cxxMemberCallExpr(
-					        matchers::has(
-						        matchers::memberExpr(
-							        matchers::has(
-								        matchers::materializeTemporaryExpr(
-									        matchers::has(
-										        matchers::castExpr(
-											        matchers::hasSourceExpression(
-												        matchers::cxxConstructExpr(
-													        matchers::hasArgument(0,
-														        matchers::ignoringParenCasts(
-															        matchers::declRefExpr().bind("value")
-														        )
-													        )
-												        )
-											        )
-										        )
-									        )
-								        )
-							        )
-						        )
-					        )
-				        )
-			        ),
-			        matchers::ignoringParenCasts(
-				        matchers::integerLiteral().bind("value")
-			        )
-		        )
-	        )
-        ),
-        [&](const matchers::MatchFinder::MatchResult& result) {
-            auto offset = result.Nodes.getNodeAs<clang::IntegerLiteral>("offset");
-            auto value = result.Nodes.getNodeAs<clang::Expr>("value");
-            auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
-            auto castDeclRef = result.Nodes.getNodeAs<clang::CStyleCastExpr>("castDeclRef");
-            auto castProp = result.Nodes.getNodeAs<clang::CStyleCastExpr>("castProp");
-
-            auto instanceAttr = declRef->getDecl()->getAttr<clang::AnnotateAttr>();
-            if (instanceAttr != nullptr && reflInfo.Self == 0)
-                reflInfo.Self = extractOffset(instanceAttr);
-
-            uint64_t propertyOffset = offset->getValue().getLimitedValue(std::numeric_limits<uint64_t>::max());
-            if (castDeclRef != nullptr)
-                propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 8;
-            else
-                propertyOffset *= sizeof(uint64_t);
-
-            if (auto integerLit = clang::dyn_cast<clang::IntegerLiteral>(value)) {
-                // If the target type of the cast expression is provided, retrieve the value limited to it;
-                // otherwise, it's going to be uint64 (because the argument itself is uint64).
-                uint64_t maxValue = std::numeric_limits<uint64_t>::max();
-
-                if (castProp != nullptr) {
-                    uint64_t typeWidth = context.getTypeInfo(castProp->getTypeAsWritten()).Width;
-
-                    // Special handling for 128 bits values; split as 2x64.
-                    if (typeWidth == 128) {
-                        // Note: endianness of the Switch is little endian
-                        uint64_t loPart = integerLit->getValue().extractBitsAsZExtValue(64, 0);
-                        uint64_t hiPart = integerLit->getValue().extractBitsAsZExtValue(64, 64);
-
-                        reflInfo.Properties[propertyOffset + sizeof(uint64_t)] = loPart;
-                        reflInfo.Properties[propertyOffset] = hiPart;
-
-                        return;
-                    }
-
-                    // 1 << 64 would overflow
-                    // Thankfully the default value is alread ULLONG_MAX
-                    if (typeWidth < 64)
-                        maxValue = (1uLL << typeWidth) - 1;
-                }
-
-                reflInfo.Properties[propertyOffset] = integerLit->getValue().getLimitedValue(maxValue);
-            }
-            else if (auto valueRef = clang::dyn_cast<clang::DeclRefExpr>(value)) {
-                // If it's a declaration reference, check for our annotation on the referenced symbol;
-                //   if there isn't, then it's likely assigning to some variable, and we probably don't
-                //   care.
-                auto value = valueRef->getDecl();
-
-                auto annotationAttribute = value->getAttr<clang::AnnotateAttr>();
-                if (annotationAttribute == nullptr)
-                    return;
-
-                reflInfo.Properties[propertyOffset] = extractOffset(annotationAttribute);
-            }
-        }
-    );
-
-    matchFinder.Run();
-
-    return reflInfo;
-}
-
-void Analyzer::ProcessObject(IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
-	std::string assembledPseudocode = [&] {
-		std::stringstream strm;
-		Utils::Exporter exporter(strm);
-		exporter.Run(functionInfo, [](tinfo_t& argType) {
-			argType = tinfo_t{ BTF_UINT64 };
-		});
-
-		return strm.str();
-	}();
-
-    return ParsePseudoCode([this, &functionInfo, &reflInfo](clang::ASTContext& context) {
-        return this->ProcessObject(context, functionInfo, reflInfo);
-    }, assembledPseudocode);
-}
-
-void Analyzer::ProcessObject(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo) {
-    auto scopeQuery = matchers::forFunction(matchers::hasName(functionInfo.GetName()));
-
-    AST::Explorer firstStage(context);
-    
-    firstStage.AddMatcher(
-        matchers::returnStmt(
-            scopeQuery,
-            matchers::hasReturnValue(
-                matchers::ignoringParenCasts(
-                    matchers::unaryOperator(
-                        matchers::hasOperatorName("&"),
-                        matchers::hasUnaryOperand(
-                            matchers::declRefExpr().bind("instance")
-                        )
-                    )
-                )
-            )
-        ),
-        [&](const matchers::MatchFinder::MatchResult& result) {
-            auto instanceVariable = result.Nodes.getNodeAs<clang::DeclRefExpr>("instance");
-
-            auto attribute = instanceVariable->getDecl()->getAttr<clang::AnnotateAttr>();
-            if (attribute == nullptr)
-                return;
-
-            reflInfo.Self = extractOffset(attribute);
-        }
-    );
-
-    firstStage.Run();
-}
-
-
-void Analyzer::ProcessReflectionObjectConstructionCall(IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
-	std::string assembledPseudocode = [&] {
-        std::stringstream strm;
-		Utils::Exporter exporter(strm);
-		exporter.Run(functionInfo, [](tinfo_t& argType) {
-			argType = tinfo_t{ BTF_UINT64 };
-		});
-
-        return strm.str();
-    }();
-
-    return ParsePseudoCode([this, &reflInfo, &functionInfo, reflCtor](clang::ASTContext& context) {
-        return this->ProcessReflectionObjectConstructionCall(context, functionInfo, reflInfo, reflCtor);
-    }, assembledPseudocode);
+	return extractOffset(decl->getAttr<clang::AnnotateAttr>());
 }
 
 template <typename T>
-auto ExtractArgument(const clang::Expr* arg) -> const T* {
-    if (auto declRef = clang::dyn_cast<T>(arg))
-        return declRef;
+auto Analyzer::Analyze(clang::ASTContext& context, const IDA::API::Function& functionInfo) -> T* {
+    // Extract all callers. If there is more than one (or none), discard this function.
+    std::vector<ea_t> callers = functionInfo.GetReferencesTo(XREF_FAR);
+    if (callers.size() != 1)
+        return nullptr;
 
-	if (auto unaryOperator = clang::dyn_cast<clang::UnaryOperator>(arg))
-		if (unaryOperator->getOpcode() == clang::UnaryOperatorKind::UO_AddrOf)
-			return ExtractArgument<T>(unaryOperator->getSubExpr());
+    auto targetDecl = functionDecl(hasName(functionInfo.GetName()));
+    auto scopeQuery = forFunction(targetDecl);
 
-	if (auto castExpr = clang::dyn_cast<clang::CastExpr>(arg))
-		return ExtractArgument<T>(castExpr->getSubExpr());
+    auto optionallyCastExpr = [](llvm::StringRef const& bindName, auto&& query) {
+        return anyOf(query, castExpr(query).bind(bindName));
+    };
 
-	if (auto constructExpr = clang::dyn_cast<clang::CXXConstructExpr>(arg)) {
-		using namespace std::string_view_literals;
-
-		if (constructExpr->getNumArgs() == 0)
-			return nullptr;
-
-		if (constructExpr->getConstructor()->getNameAsString() != "AnyType"sv)
-			return nullptr;
-
-		return ExtractArgument<T>(constructExpr->getArg(0));
-	}
-
-    if (auto memberCallExpr = clang::dyn_cast<clang::CallExpr>(arg))
-    {
-        if (memberCallExpr->getNumArgs() == 0)
-            return nullptr;
-
-        return ExtractArgument<T>(memberCallExpr->getArg(0));
-    }
-
-	if (auto materializeExpr = clang::dyn_cast<clang::MaterializeTemporaryExpr>(arg))
-		return ExtractArgument<T>(materializeExpr->getSubExpr());
-
-	return nullptr;
-}
-
-template <typename T, typename Fn>
-auto ProcessParameter(const clang::CallExpr* callSite, size_t index, Fn&& fn) {
-	if (callSite == nullptr || callSite->getNumArgs() <= index)
-		return false;
-
-	auto parameter = ExtractArgument<T>(callSite->getArg(index));
-	if (parameter != nullptr)
-		return fn(parameter);
-
-	return false;
-};
-
-
-void Analyzer::ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor) {
-    std::unordered_map<uint64_t, const clang::CallExpr*> functionCalls;
-    std::unordered_map<const clang::Decl*, const clang::FunctionDecl*> assignments;
-    std::multimap<const clang::Decl*, const clang::CallExpr*> constructions;
-
-    AST::Explorer explorer(context);
-    explorer.AddMatcher(matchers::binaryOperator(
-        matchers::hasOperatorName("="),
-        matchers::hasOperands(
-            matchers::declRefExpr().bind("declRef"),
-            matchers::ignoringParenCasts(
-                matchers::hasDescendant(
-                    matchers::callExpr(
-                        matchers::callee(
-                            matchers::functionDecl(
-                                matchers::hasAttr(clang::attr::Annotate)
-                            ).bind("functionDecl")
-                        )
+    auto propertyAssignmentQuery = traverse(TK_IgnoreUnlessSpelledInSource,
+        binaryOperator(scopeQuery, hasOperatorName("="), hasOperands(
+            unaryOperator(hasOperatorName("*"), hasUnaryOperand(
+                optionallyCastExpr("castProp",
+                    ignoringParens(
+                        binaryOperator(hasOperatorName("+"), hasOperands(
+                            optionallyCastExpr("castDeclRef", anyOf(
+                                declRefExpr().bind("declRef"),
+                                unaryOperator(hasOperatorName("&"), hasUnaryOperand(
+                                    declRefExpr().bind("declRef")
+                                ))
+                            )),
+                            integerLiteral().bind("offset")
+                        ))
                     )
                 )
+            )),
+            anyOf(
+                custom_matchers::ignoringAnyConstruct(declRefExpr(to(varDecl().bind("value")))),
+                ignoringParenCasts(integerLiteral().bind("value"))
             )
-        )
-    ), [&](const matchers::MatchFinder::MatchResult& result) {
-		auto functionDecl = result.Nodes.getNodeAs<clang::FunctionDecl>("functionDecl");
-		auto declRef = result.Nodes.getNodeAs<clang::DeclRefExpr>("declRef");
+        ))
+    );
 
-        assignments.emplace(declRef->getDecl(), functionDecl);
-    });
-    explorer.AddMatcher(matchers::callExpr(
-        matchers::forFunction(
-            matchers::functionDecl(
-                matchers::hasName(functionInfo.GetName())
-            )
-        ),
-        matchers::callee(
-			matchers::functionDecl(
-				matchers::hasAttr(clang::attr::Annotate)
-			)
-        )
-    ).bind("callExpr"), [&](const matchers::MatchFinder::MatchResult& result) {
-        auto callExpr = result.Nodes.getNodeAs<clang::CallExpr>("callExpr");
-
-		if (auto calleeDecl = callExpr->getDirectCallee()) {
-			auto calleeAttr = calleeDecl->getAttr<clang::AnnotateAttr>();
-
-            functionCalls.emplace(extractOffset(calleeAttr), callExpr);
-		}
-
-		if (callExpr->getNumArgs() != 0) {
-			auto instanceDeclRef = ExtractArgument<clang::DeclRefExpr>(callExpr->getArg(0));
-			if (instanceDeclRef != nullptr)
-				constructions.emplace(instanceDeclRef->getDecl(), callExpr);
-		}
-    });
-    explorer.Run(clang::TraversalKind::TK_IgnoreUnlessSpelledInSource);
-
-    // Find the call site
-    auto constructorCallSite = [&]() -> const clang::CallExpr* {
-        // Identify via clang::annotate
-        auto itr = functionCalls.find(reflCtor);
-        if (itr != functionCalls.end())
-            return itr->second;
-
+    std::unique_ptr<T> storeInstance{ new (std::nothrow) T() };
+    if (storeInstance == nullptr)
         return nullptr;
-    }();
 
-	// CreateReflInfo(&instance, &name, baseTypePtr, pfn1, pfn2);
+    namespace Types = Dread::Reflection::Types;
 
-	if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 0, [&reflInfo](const clang::DeclRefExpr* instanceParameter) {
-		auto instanceAttribute = instanceParameter->getDecl()->getAttr<clang::AnnotateAttr>();
-		if (instanceAttribute == nullptr)
-			return false;
+    // Step 1. Parse the constructor itself.
+    // 1.A. Main parse query
+    ExecuteOne(context, propertyAssignmentQuery, [&](const MatchFinder::MatchResult& result) {
+        auto offset = result.Nodes.getNodeAs<IntegerLiteral>("offset");
+        auto declRef = result.Nodes.getNodeAs<DeclRefExpr>("declRef");
+        auto castDeclRef = result.Nodes.getNodeAs<CStyleCastExpr>("castDeclRef");
+        auto castProp = result.Nodes.getNodeAs<CStyleCastExpr>("castProp");
 
-		reflInfo.Self = extractOffset(instanceAttribute);
-        return true;
-    }))
-        return;
+        auto instanceAttr = declRef->getDecl()->getAttr<AnnotateAttr>();
+        // if (instanceAttr != nullptr && storeInstance->Instance == 0)
+        //     storeInstance->Instance = extractOffset(instanceAttr);
 
-    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 1, [&](const clang::DeclRefExpr* nameParameter) {
-        auto typeNameAssignmentValue = [&]() -> const clang::CallExpr* {
-            auto typeNameConstruction = constructions.upper_bound(nameParameter->getDecl());
-            if (typeNameConstruction == constructions.end())
-                return nullptr;
+        uint64_t propertyOffset = offset->getValue().getLimitedValue(std::numeric_limits<uint64_t>::max());
+        if (castDeclRef != nullptr)
+            propertyOffset *= context.getTypeInfo(castDeclRef->getTypeAsWritten()).Width / 8;
+        else
+            propertyOffset *= sizeof(uint64_t);
 
-            return typeNameConstruction->second;
-        }();
+        if (auto integerLit = result.Nodes.getNodeAs<IntegerLiteral>("value")) {
+            // If the target type of the cast expression is provided, retrieve the value limited to it;
+            // otherwise, it's going to be uint64 (because the argument itself is uint64).
+            uint64_t maxValue = std::numeric_limits<uint64_t>::max();
 
-        if (typeNameAssignmentValue != nullptr) {
-            auto typeName = ExtractArgument<clang::StringLiteral>(typeNameAssignmentValue->getArg(1));
-            if (typeName == nullptr)
-                return false;
+            if (castProp != nullptr) {
+                uint64_t typeWidth = context.getTypeInfo(castProp->getTypeAsWritten()).Width;
 
-            reflInfo.TypeName = typeName->getBytes();
-            return true;
+                // Special handling for 128 bits values; split as 2x64.
+                if (typeWidth == 128) {
+                    // Note: endianness of the Switch is little endian
+                    uint64_t loPart = integerLit->getValue().extractBitsAsZExtValue(64, 0);
+                    uint64_t hiPart = integerLit->getValue().extractBitsAsZExtValue(64, 64);
+
+                    storeInstance->ProcessProperty(propertyOffset,
+                        Types::PropertySemanticKind::IntegerLiteral, hiPart);
+                    storeInstance->ProcessProperty(propertyOffset + sizeof(uint64_t),
+                        Types::PropertySemanticKind::IntegerLiteral, loPart);
+
+                    return;
+                }
+
+                // 1 << 64 would overflow, thankfully the default value is alread ULLONG_MAX
+                if (typeWidth < 64)
+                    maxValue = (1uLL << typeWidth) - 1;
+            }
+
+            storeInstance->ProcessProperty(propertyOffset,
+                Types::PropertySemanticKind::IntegerLiteral,
+                integerLit->getValue().getLimitedValue(maxValue)
+            );
         }
-
-        return false;
-    })) {
-        // Problem: the call to base::global::CStrId (which is really what we're looking for here)
-        //   likely got inlined, meaning that instead we have to look for CRC64 in this really stupid way
-        //   and hope that there isn't more than one call into it.
-        // https://i.imgur.com/PUOAzoy.png
-        // Here is the expected output: https://i.imgur.com/GFA6X9a.png
-        AST::Explorer crcExplorer(context);
-        crcExplorer.AddMatcher(matchers::callExpr(
-			matchers::callee(matchers::functionDecl(matchers::hasAttr(clang::attr::Annotate)).bind("functionDecl")),
-            matchers::hasArgument(0, matchers::stringLiteral().bind("typeName")),
-            matchers::hasArgument(1, matchers::integerLiteral().bind("integerLiteral"))
-        ), [&](const matchers::MatchFinder::MatchResult& result) {
-            auto typeName = result.Nodes.getNodeAs<clang::StringLiteral>("typeName");
-            auto integerLiteral = result.Nodes.getNodeAs<clang::IntegerLiteral>("integerLiteral");
-            auto functionDecl = result.Nodes.getNodeAs<clang::FunctionDecl>("functionDecl");
-
-            auto declAttr = functionDecl->getAttr<clang::AnnotateAttr>();
-            if (declAttr == nullptr /* || extractOffset(declAttr) != this->_versionInfo->Properties.CRC64 */)
+        else if (auto valueVarDecl = result.Nodes.getNodeAs<VarDecl>("value")) {
+            auto annotationAttribute = valueVarDecl->getAttr<clang::AnnotateAttr>();
+            if (annotationAttribute == nullptr)
                 return;
 
-            if (typeName->getByteLength() != integerLiteral->getValue())
-                return;
+            storeInstance->ProcessProperty(propertyOffset,
+                Types::PropertySemanticKind::RVA,
+                extractOffset(annotationAttribute)
+            );
+        }
+    });
 
-            reflInfo.TypeName = typeName->getBytes();
+    // 1.B. Some will be negative indexed
+    //      TODO: Find them, identify the type of the variable, identify the shifted offset, and recalculate the value
+
+    // Step 2. Parse the constructor call.
+    IDA::API::Function callerFunctionInfo { callers.front() };
+    std::string callerPseudocode = GetPseudocode(callerFunctionInfo);
+    ParsePseudoCode([&](ASTContext& context) {
+        ExecuteOne(context,
+            storeInstance->MakeConstructorQuery(targetDecl),
+            [&](const MatchFinder::MatchResult& result) {
+                storeInstance->ProcessConstructorQuery(result);
+            }
+        );
+    }, callerPseudocode);
+
+    // Release ownership of the pointer so it can be encapsulated.
+    return storeInstance.release();
+}
+
+// Explicitely instanciate the templates for the compiler.
+template Dread::Reflection::CType::Store* 
+    Analyzer::Analyze<Dread::Reflection::CType::Store>(clang::ASTContext&, const IDA::API::Function&);
+
+auto Analyzer::Identify(IDA::API::Function const& functionInfo) -> Dread::Reflection::CType::Store* {
+    std::string assembledPseudocode = GetPseudocode(functionInfo);
+
+    auto scopeQuery = forFunction(hasName(functionInfo.GetName()));
+
+    return ParsePseudoCode([&](clang::ASTContext& context) {
+        Dread::Reflection::CType::Store* dynTypedStore = nullptr;
+
+        ExecuteOne(context, callExpr(
+            scopeQuery,
+            custom_matchers::crcCallExpr(),
+            hasArgument(0, traverse(TK_IgnoreUnlessSpelledInSource, stringLiteral().bind("stringLiteral")))
+        ),
+        [&](const MatchFinder::MatchResult& result) {
+            auto stringLiteral = result.Nodes.getNodeAs<clang::StringLiteral>("stringLiteral");
+
+            static constexpr Dread::CRC::DefaultEngine checksumEngine;
+            switch (checksumEngine(stringLiteral->getString())) {
+                case checksumEngine("bool"):
+                case checksumEngine("float"):
+                case checksumEngine("double"):
+                    // ^^^ Unverified / Verified vvv
+                case checksumEngine("unsigned char"):
+                case checksumEngine("unsigned short"):
+                case checksumEngine("unsigned long"):
+                case checksumEngine("unsigned long long"):
+                    // ^^^ Unsure if this should be a fallthrough
+                    [[fallthrough]];
+                case checksumEngine(Dread::Reflection::CType::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CType::Store>(context, functionInfo);
+                    break;
+                case checksumEngine(Dread::Reflection::CEnumType::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CEnumType::Store>(context, functionInfo);
+                    break;
+                case checksumEngine(Dread::Reflection::CFlagsetType::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CFlagsetType::Store>(context, functionInfo);
+                    break;
+                case checksumEngine(Dread::Reflection::CPointerType::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CPointerType::Store>(context, functionInfo);
+                    break;
+                case checksumEngine(Dread::Reflection::CCollectionType::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CCollectionType::Store>(context, functionInfo);
+                    break;
+                case checksumEngine(Dread::Reflection::CClass::Name):
+                    dynTypedStore = Analyze<Dread::Reflection::CClass::Store>(context, functionInfo);
+                    break;
+                default:
+                    IDA::API::Message("(Dread) Unknown reflection object type '{}' found at {:016x}", 
+                        std::string_view{ stringLiteral->getString() }, functionInfo.GetAddress());
+                    break;
+            }
         });
-        crcExplorer.Run(clang::TraversalKind::TK_IgnoreUnlessSpelledInSource);
-    }
 
-	// Third parameter is the base type
-	//   If not provided, 0LL is given, and Clang sees it as an IntegerLiteral, not a DeclRefExpr.
-    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 2, [&](const clang::DeclRefExpr* baseTypeParam) {
-		auto baseFunctionDecl = [&]() -> const clang::FunctionDecl* {
-			auto itr = assignments.find(baseTypeParam->getDecl());
-			if (itr == assignments.end())
-				return nullptr;
+        return dynTypedStore;
+    }, assembledPseudocode);
+}
 
-			return itr->second;
-		}();
+// -------------------------------------------------------
 
-		if (baseFunctionDecl == nullptr)
-			return false;
+std::string Analyzer::GetPseudocode(const IDA::API::Function& functionInfo) const {
+    std::stringstream strm;
+    Utils::Exporter exporter(strm);
+    exporter.Run(functionInfo, [](tinfo_t& argType) {
+        argType = tinfo_t{ BTF_UINT64 };
+    });
 
-		auto baseTypeAttr = baseFunctionDecl->getAttr<clang::AnnotateAttr>();
-		if (baseTypeAttr == nullptr)
-			return false;
+    return strm.str();
+}
 
-		// Base type is stored here.
-		reflInfo.Properties[0x78] = extractOffset(baseTypeAttr);
-        return true;
-    }))
-        return;
+template <typename... Ts>
+uint64_t SelectFirstOffset(const Decl* arg, Ts&&... args) {
+    uint64_t value = extractOffset(arg);
+    if (value != 0)
+        return value;
 
-    // Fourth parameter is the function enumerating member variables
-    if (!ProcessParameter<clang::DeclRefExpr>(constructorCallSite, 3, [&](const clang::DeclRefExpr* varEnumerator) {
-		auto enumeratorAttr = varEnumerator->getDecl()->getAttr<clang::AnnotateAttr>();
-		if (enumeratorAttr != nullptr)
-			reflInfo.Properties[0x70] = extractOffset(enumeratorAttr);
-
-        return enumeratorAttr != nullptr;
-    }))
-        return;
-
-    // And fifth parmeter depends!
-    //  1. For CClass, it enumerates member functions
-    //  2. For CEnumType, it enumerates member values
-    //  3. And god knows what else
-    // TODO: Write the code for this
+    if constexpr (sizeof...(Ts) == 0)
+        return 0uLL;
+    else
+        return SelectFirstOffset(std::forward<Ts&&>(args)...);
 }
 
 void Analyzer::HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) {

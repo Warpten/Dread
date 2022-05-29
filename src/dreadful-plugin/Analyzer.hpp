@@ -1,6 +1,8 @@
 #pragma once
 
-// dreadful-ast-parser
+#include "Dread/Reflection/CType.hpp"
+
+// dreadful-plugin-clang-base
 #include <AST/Analyzer.hpp>
 
 // std
@@ -18,23 +20,18 @@ namespace clang {
 }
 
 struct Analyzer final : AST::Analyzer {
-    struct ReflInfo {
-        std::string Name;
-        std::string TypeName;
+    /// <summary>
+    /// Analysis entry point.
+    /// </summary>
+    /// <param name="functionInfo">The function to analyze.</param>
+    Dread::Reflection::CType::Store* Identify(IDA::API::Function const& functionInfo);
 
-        uint64_t Self = 0;
-        std::unordered_map<uint64_t /* offset */, uint64_t /* value */> Properties;
-    };
+private:
+    std::string GetPseudocode(const IDA::API::Function& functionInfo) const;
 
-    ReflInfo ProcessReflectionObjectConstruction(IDA::API::Function const& functionInfo);
-    ReflInfo ProcessReflectionObjectConstruction(clang::ASTContext& context, IDA::API::Function const& functionInfo);
+    template <typename T>
+    T* Analyze(clang::ASTContext&, const IDA::API::Function&);
 
-	void ProcessReflectionObjectConstructionCall(IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor);
-	void ProcessReflectionObjectConstructionCall(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo, uint64_t reflCtor);
-
-    void ProcessObject(IDA::API::Function const& functionInfo, ReflInfo& reflInfo);
-    void ProcessObject(clang::ASTContext& context, IDA::API::Function const& functionInfo, ReflInfo& reflInfo);
-
-public:
+public: // clang::DiagnosticsConsumer
     void HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) override;
 };
