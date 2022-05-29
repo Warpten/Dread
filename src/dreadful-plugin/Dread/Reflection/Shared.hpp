@@ -136,8 +136,10 @@ namespace Dread::Reflection {
                 return true;
             }
 
-            template <typename U, typename = std::enable_if_t<!std::is_same_v<T, U>>, typename... Args>
-            static bool TryAssign(U* instance, Args&&...) { return false; }
+            template <typename U, typename... Args>
+            static auto TryAssign(U* instance, Args&&...)
+                -> std::enable_if_t<!std::is_same_v<T, U>, bool>
+            { return false; }
         };
 
         template <typename... Ps>
