@@ -11,7 +11,7 @@ namespace Dread::Reflection::CType {
     struct Store : virtual Types::CommonBase {
         explicit Store();
 
-        void ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value);
+        bool ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) override;
 
         auto MakeConstructorQuery(const clang::ast_matchers::DeclarationMatcher& declMatcher)
             -> clang::ast_matchers::internal::Matcher<clang::Stmt> override;
@@ -30,5 +30,15 @@ namespace Dread::Reflection::CType {
             uint64_t RVA = 0;
         } _baseType;
         uint64_t _instanceRVA = 0;
+
+        uint64_t _typeSize = 0; //< Size of the type reflected, in bytes
+
+        uint64_t _constructorRVA = 0;
+        uint64_t _copyConstructorRVA = 0;
+        uint64_t _moveConstructorRVA = 0;
+        uint64_t _destructorRVA = 0;
+        uint64_t _equalityComparerRVA = 0;
+        uint64_t _hashCodeRVA = 0;
+        uint64_t _getReflInfoRVA = 0;
     };
 }

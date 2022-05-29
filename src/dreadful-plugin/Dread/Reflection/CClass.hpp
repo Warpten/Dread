@@ -12,6 +12,6 @@ namespace Dread::Reflection::CClass {
     struct Store : virtual CType::Store, virtual Types::CommonBase {
         explicit Store();
 
-        void ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) override;
+        bool ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) override;
     };
 }

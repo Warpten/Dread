@@ -30,7 +30,7 @@ namespace Dread::Reflection {
             constexpr std::string_view Kind() const { return _kind; }
 
             virtual std::string_view TypeName() const = 0;
-            virtual void ProcessProperty(uint64_t offset, PropertySemanticKind semanticKind, uint64_t value) = 0;
+            virtual bool ProcessProperty(uint64_t offset, PropertySemanticKind semanticKind, uint64_t value) = 0;
 
             virtual clang::ast_matchers::internal::Matcher<clang::Stmt> MakeConstructorQuery(const clang::ast_matchers::DeclarationMatcher& declMatcher) = 0;
             virtual void ProcessConstructorQuery(const clang::ast_matchers::MatchFinder::MatchResult& matchResults) = 0;
@@ -123,9 +123,29 @@ namespace Dread::Reflection {
             }
         };
 
-        template <size_t Offset, Types::PropertySemanticKind SemanticKind>
-        struct PropertyTraits {
-            constexpr static const size_t Value = Offset;
+        template <size_t Offset, Types::PropertySemanticKind Kind, auto>
+        struct PropertyInfo;
+
+        template <size_t Offset, Types::PropertySemanticKind Kind, typename T, typename C, T C::*P>
+        struct PropertyInfo<Offset, Kind, P> {
+            static bool TryAssign(T* instance, size_t offset, Types::PropertySemanticKind kind, uint64_t value) {
+                if (offset != Offset || kind != Kind)
+                    return false;
+
+                std::invoke(instance, P) = value;
+                return true;
+            }
+
+            template <typename U, typename = std::enable_if_t<!std::is_same_v<T, U>>, typename... Args>
+            static bool TryAssign(U* instance, Args&&...) { return false; }
+        };
+
+        template <typename... Ps>
+        struct PropertySequence {
+            template <typename T>
+            static bool TryProcess(T* instance, size_t offset, Types::PropertySemanticKind kind, uint64_t value) {
+                return (Ps::TryAssign(instance, offset, kind, value) || ...);
+            }
         };
     }
 

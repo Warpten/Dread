@@ -12,7 +12,7 @@ namespace Dread::Reflection::CEnumType {
     struct Store : virtual CType::Store, virtual Types::CommonBase {
         explicit Store();
 
-        void ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) override;
+        bool ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) override;
 
         auto MakeConstructorQuery(const clang::ast_matchers::DeclarationMatcher& declMatcher)
             -> clang::ast_matchers::internal::Matcher<clang::Stmt> override;

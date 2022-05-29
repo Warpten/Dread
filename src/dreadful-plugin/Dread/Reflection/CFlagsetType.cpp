@@ -7,10 +7,7 @@ namespace Dread::Reflection::CFlagsetType {
 
     namespace Traits = Dread::Reflection::Traits;
 
-    Store::Store() : CType::Store(), Types::CommonBase(Name)
-    {
-
-    }
+    Store::Store() : CType::Store(), Types::CommonBase(Name) { }
 
     void Store::ProcessConstructorQuery(const MatchFinder::MatchResult& matchResults) {
         using ConstructorArguments = Traits::ConstructorTraits<
@@ -21,8 +18,11 @@ namespace Dread::Reflection::CFlagsetType {
         auto [instance, typeName] = ConstructorArguments::Extract(matchResults);
     }
 
-    void Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+    bool Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+        if (CType::Store::ProcessProperty(offset, semanticKind, value))
+            return true;
 
+        return false;
     }
 
     auto Store::MakeConstructorQuery(const DeclarationMatcher& declMatcher) -> Matcher<Stmt> {

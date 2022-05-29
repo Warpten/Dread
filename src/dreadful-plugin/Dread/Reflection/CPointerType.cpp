@@ -7,13 +7,10 @@ namespace Dread::Reflection::CPointerType {
 
     Store::Store() : CType::Store(), CommonBase(Name) { }
 
-    void Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
-        switch (offset) {
-            // case 0x??: // Pointee
-            //  this->Pointee = value;
-            break;
-        }
+    bool Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+        if (CType::Store::ProcessProperty(offset, semanticKind, value))
+            return true;
 
-        CType::Store::ProcessProperty(offset, semanticKind, value);
+        return false;
     }
 }

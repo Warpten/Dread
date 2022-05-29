@@ -34,8 +34,21 @@ namespace Dread::Reflection::CType {
         _baseType.RVA = baseTypeRVA;
     }
 
-    void Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
-        
+    bool Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+        using PropertySequence = Traits::PropertySequence<
+            Traits::PropertyInfo<0x18, Types::PropertySemanticKind::IntegerLiteral, &Store::_typeSize>,
+            Traits::PropertyInfo<0x28, Types::PropertySemanticKind::RVA, &Store::_constructorRVA>,
+            Traits::PropertyInfo<0x30, Types::PropertySemanticKind::RVA, &Store::_copyConstructorRVA>,
+            Traits::PropertyInfo<0x38, Types::PropertySemanticKind::RVA, &Store::_moveConstructorRVA>,
+            Traits::PropertyInfo<0x40, Types::PropertySemanticKind::RVA, &Store::_destructorRVA>,
+            // 0x48 fptr
+            // 0x50 fptr
+            Traits::PropertyInfo<0x58, Types::PropertySemanticKind::RVA, &Store::_equalityComparerRVA>,
+            Traits::PropertyInfo<0x60, Types::PropertySemanticKind::RVA, &Store::_hashCodeRVA>,
+            Traits::PropertyInfo<0x68, Types::PropertySemanticKind::RVA, &Store::_getReflInfoRVA>
+        >;
+
+        return PropertySequence::TryProcess(this, offset, semanticKind, value);
     }
 
     Matcher<Stmt> Store::MakeConstructorQuery(clang::ast_matchers::DeclarationMatcher const& declMatcher) 

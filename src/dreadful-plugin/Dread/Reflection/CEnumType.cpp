@@ -23,8 +23,11 @@ namespace Dread::Reflection::CEnumType {
         auto [instance, typeName, iterateEnumerationMembers] = ConstructorArguments::Extract(matchResults);
     }
 
-    void Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+    bool Store::ProcessProperty(uint64_t offset, Types::PropertySemanticKind semanticKind, uint64_t value) {
+        if (CType::Store::ProcessProperty(offset, semanticKind, value))
+            return true;
 
+        return false;
     }
 
     Matcher<Stmt> Store::MakeConstructorQuery(const DeclarationMatcher& declMatcher) {
