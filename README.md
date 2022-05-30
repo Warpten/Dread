@@ -27,3 +27,90 @@ An IDA Pro plugin to help in disassembly of Metroid Dread.
    They should look something like this:  
    ![](https://i.imgur.com/06TdcfU.png)
 4. From there, we can deduce the actual name of the type for which the reflobject is constructed, its base type, publicly exposed functions, and member variables.
+
+### Gotchas
+
+<details>
+   <summary>Constructors implementations can be inlined in the function calling them</summary>
+   
+Below is a function where the constructor got inlined into the `GetReflInfo` method, causing all memory writes to be directly in `.bss`. This usually only happens for reflection information pertaining to built-in types.
+   
+   
+```
+_QWORD *sub_71000A3A30()
+{
+  ...
+
+  v0 = __ldar(&qword_7101D02BD8);
+  if ( (v0 & 1) == 0 && _cxa_guard_acquire_0(&qword_7101D02BD8) )
+  {
+    sub_71000003D4(&v7, "unsigned char", 1);
+    v2 = CRC64("unsigned char", 0xDuLL);
+    qword_7101D02AF8 = (unsigned __int64)&off_71019C5550;
+    *(&qword_7101D02AF8 + 1) = (Any)v7;
+    if ( qword_7101CEE108 + 16 != v7 )
+      ++*(_DWORD *)(v7 + 8);
+    *(&qword_7101D02AF8 + 2) = (Any)v2;
+    *(&qword_7101D02AF8 + 3) = 1LL;
+    qword_7101D02B48 = 0LL;
+    qword_7101D02B50 = (unsigned __int64)sub_71000A3C0C;
+    dword_7101D02B18 = 0xFFFFFFFF00000000LL;
+    qword_7101D02B20 = 0LL;
+    qword_7101D02B28 = 0LL;
+    qword_7101D02B30 = 0LL;
+    qword_7101D02B58 = (unsigned __int64)sub_71000A3C20;
+    qword_7101D02B60 = (unsigned __int64)sub_71000A3C28;
+    qword_7101D02B38 = 0LL;
+    qword_7101D02B40 = 0LL;
+    LOBYTE(byte_7101D02B9C) = 1;
+    qword_7101D02B68 = (unsigned __int64)nullsub_341;
+    qword_7101D02B70 = 0LL;
+    qword_7101D02B78 = 0LL;
+    qword_7101D02B80 = 0LL;
+    LODWORD(dword_7101D02B98) = 10;
+    LODWORD(dword_7101D02BA0) = 62;
+    qword_7101D02B88 = 0LL;
+    qword_7101D02B90 = 0LL;
+    v3 = sub_71000836A0();
+    qword_7101D02BC8 = 0x3E0000000ALL;
+    qword_7101D02BA8 = (Any)v3;
+    qword_7101D02BB0 = 0LL;
+    qword_7101D02BB8 = 0LL;
+    qword_7101D02BC0 = 0LL;
+    qword_7101D02BD0 = sub_71000836A0();
+    qword_7101D02B20 = (unsigned __int64)sub_71000A3C2C;
+    qword_7101D02B28 = (unsigned __int64)sub_71000A3C34;
+    qword_7101D02B30 = (unsigned __int64)sub_71000A3C40;
+    qword_7101D02B38 = (unsigned __int64)nullsub_207;
+    v4 = (Any)qword_7101CEE108;
+    qword_7101D02B40 = (unsigned __int64)sub_71000A3C50;
+    qword_7101D02B48 = (unsigned __int64)sub_71000A3C64;
+    LODWORD(dword_7101D02B18) = (Any)dword_7101D02B18 & 0xFFFFFFFC;
+    if ( qword_7101CEE108 )
+    {
+      v5 = (Any)v7;
+      if ( v7 )
+      {
+        if ( v7 != qword_7101CEE108 + 16 )
+        {
+          v6 = *(_DWORD *)(v7 + 8) - 1;
+          *(_DWORD *)(v7 + 8) = (Any)v6;
+          if ( !v6 )
+          {
+            sub_7100080124(v4, v5);
+            v4 = (Any)qword_7101CEE108;
+          }
+        }
+      }
+      v7 = (Any)v4 + 16;
+    }
+    sub_7100000250(sub_710009C914, &qword_7101D02AF8, &off_71019C3000);
+    _cxa_guard_release_0(&qword_7101D02BD8);
+  }
+  return &qword_7101D02AF8;
+}
+```
+   
+   This is supported by first looking for the vtable assignment and using that as a base address for all following writes. The byproduct of this is that every parameter is inlined in the call site, meaning we don't need to perform step 3 of our algorithm, and can just move on.
+</details>
+
