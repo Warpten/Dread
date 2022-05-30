@@ -200,7 +200,7 @@ auto Analyzer::Analyze(clang::ASTContext& context, const IDA::API::Function& fun
             auto shiftedOffset = result.Nodes.getNodeAs<IntegerLiteral>("shiftedOffset");
             auto binaryOperator = result.Nodes.getNodeAs<BinaryOperator>("binaryOperator");
 
-            size_t calculatedOffset = 0;
+            size_t calculatedOffset = 0; //< In bytes
 
             if (valueOffset == nullptr) {
                 calculatedOffset = relativeOffset->getValue().getZExtValue();
@@ -251,8 +251,10 @@ auto Analyzer::Analyze(clang::ASTContext& context, const IDA::API::Function& fun
                         bitIndex
                     );
 
+                    auto byteOffset = (bitCount - bitIndex) / segmentWidth - 1;
+
                     storeInstance->ProcessProperty(
-                        calculatedOffset + (bitCount - bitIndex) / segmentWidth * sizeof(uint64_t),
+                        calculatedOffset + byteOffset,
                         PropertySemanticKind::IntegerLiteral,
                         partValue
                     );
