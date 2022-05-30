@@ -342,8 +342,6 @@ auto Analyzer::Identify(IDA::API::Function const& functionInfo) -> Dread::Reflec
     }, assembledPseudocode);
 }
 
-// -------------------------------------------------------
-
 std::string Analyzer::GetPseudocode(const IDA::API::Function& functionInfo) const {
     std::stringstream strm;
     Utils::Exporter exporter(strm);
@@ -352,18 +350,6 @@ std::string Analyzer::GetPseudocode(const IDA::API::Function& functionInfo) cons
     });
 
     return strm.str();
-}
-
-template <typename... Ts>
-uint64_t SelectFirstOffset(const Decl* arg, Ts&&... args) {
-    uint64_t value = extractOffset(arg);
-    if (value != 0)
-        return value;
-
-    if constexpr (sizeof...(Ts) == 0)
-        return 0uLL;
-    else
-        return SelectFirstOffset(std::forward<Ts&&>(args)...);
 }
 
 void Analyzer::HandleDiagnostic(clang::DiagnosticsEngine::Level diagLevel, const clang::Diagnostic& info) {
