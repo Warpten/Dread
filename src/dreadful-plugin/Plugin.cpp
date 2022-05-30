@@ -204,41 +204,5 @@ BUTTON CANCEL Cancel
         auto dynTypedInfo = analyzer.Identify(reflCtor);
         if (!dynTypedInfo)
             continue;
-
-#if 0
-		constexpr static const std::string_view MetadataTemplate = R"(
-template <> struct Metadata<{}> {{
-    constexpr static const std::string_view Name = "{}";
-    constexpr static const uint64_t CRC64 = {:#016x};
-
-    constexpr static const uint64_t Instance = {:#016x};
-
-    constexpr static const uint64_t Constructor      = {:#016x};
-    constexpr static const uint64_t CopyConstructor  = {:#016x};
-    constexpr static const uint64_t MoveConstructor  = {:#016x};
-    constexpr static const uint64_t Destructor       = {:#016x};
-    // 0x48
-    // 0x50
-    constexpr static const uint64_t EqualityComparer = {:#016x};
-    constexpr static const uint64_t GetHashCode      = {:#016x};
-    constexpr static const uint64_t EnumerateMembers = {:#016x};
-}};)";
-
-        analysisOutput << std::format(MetadataTemplate,
-            reflInfo.Name,
-            reflInfo.Name,
-            checksumEngine_(reflInfo.Name),
-            reflInfo.Self,
-            reflInfo.Properties[0x28],
-            reflInfo.Properties[0x30],
-            reflInfo.Properties[0x38],
-            reflInfo.Properties[0x40],
-            // reflInfo.Properties[0x48],
-            // reflInfo.Properties[0x50],
-            reflInfo.Properties[0x58],
-            reflInfo.Properties[0x60],
-            reflInfo.Properties[0x70]
-        );
-#endif
     }
 }

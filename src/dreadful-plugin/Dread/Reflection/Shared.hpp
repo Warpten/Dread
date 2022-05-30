@@ -12,6 +12,52 @@
 
 #include <functional>
 
+namespace custom_matchers {
+    using namespace clang;
+    using namespace clang::ast_matchers;
+    using namespace clang::ast_matchers::internal;
+
+    AST_MATCHER_P2(Stmt, closestPreceding, llvm::StringRef, BoundRef, size_t, MaxDelta) {
+        struct Visitor : BoundNodesTreeBuilder::Visitor {
+            explicit Visitor(llvm::StringRef const& boundRef, const Stmt& node, 
+                BoundNodesTreeBuilder* builder, ASTContext& context, size_t maxDelta)
+                : _boundRef(boundRef), Node(node), Builder(builder), Context(context), MaxDelta(maxDelta)
+            { }
+
+            void visitMatch(const BoundNodes& BoundNodesView) override {
+                auto boundReference = BoundNodesView.getNodeAs<clang::Stmt>(_boundRef);
+                if (boundReference == nullptr)
+                    return;
+
+                auto&& sourceManager = Context.getSourceManager();
+                auto refRange = boundReference->getSourceRange().getBegin();
+                auto targetRange = Node.getSourceRange().getBegin();
+
+                auto refLocation = sourceManager.getPresumedLineNumber(refRange);
+                auto targetLocation = sourceManager.getPresumedLineNumber(targetRange);
+
+                _matches = refLocation < targetLocation && (targetLocation - refLocation) <= MaxDelta;
+            }
+
+            bool Matches() const { return _matches; }
+
+        private:
+            bool _matches = false;
+
+            llvm::StringRef _boundRef;
+
+            size_t MaxDelta;
+            const Stmt& Node;
+            BoundNodesTreeBuilder* Builder;
+            ASTContext& Context;
+        } visitor(BoundRef, Node, Builder, Finder->getASTContext(), MaxDelta);
+
+        Builder->visitMatches(&visitor);
+
+        return visitor.Matches();
+    };
+}
+
 namespace Dread::Reflection {
     namespace Types {
         /// <summary>
@@ -182,6 +228,9 @@ namespace Dread::Reflection {
         template <typename... Qs>
         auto MakeConstructorQuery(DeclarationMatcher const& declMatcher, Qs&&... queries) -> Matcher<clang::Stmt> {
             return traverse(clang::TK_AsIs, callExpr(
+                // Implicitely capture ourselves
+                callExpr().bind("self"),
+
                 callee(declMatcher),
                 hasArgument(0, // 'this'
                     unaryOperator(hasOperatorName("&"), hasUnaryOperand(
@@ -194,13 +243,12 @@ namespace Dread::Reflection {
                     unaryOperator(hasOperatorName("&"), hasUnaryOperand(
                         declRefExpr(to(
                             varDecl(
-                                // TODO: For both of these, make sure the stmt matched
-                                // is the closest and precedes the call itself (needs
-                                // to be implemented in a custom matcher)
                                 anyOf(
                                     // Nominal case
                                     custom_matchers::matchesMatcher<VarDecl>(
                                         callExpr(
+                                            custom_matchers::closestPreceding("self", 5),
+
                                             hasArgument(0,
                                                 unaryOperator(hasOperatorName("&"), hasUnaryOperand(
                                                     declRefExpr(to(
@@ -215,14 +263,18 @@ namespace Dread::Reflection {
                                     // Special case when base::global::CStrId is inlined
                                     // Look for the pooling call (https://i.imgur.com/mBQyMPW.png)
                                     custom_matchers::matchesMatcher<VarDecl>(
-                                        binaryOperator(hasOperatorName("="), hasOperands(
+                                        binaryOperator(
+                                            custom_matchers::closestPreceding("self", 15),
+
+                                            hasOperatorName("="), hasOperands(
                                             declRefExpr(to(varDecl(equalsBoundNode("this")))),
-                                            ignoringParenCasts(
-                                                callExpr(
-                                                    hasArgument(2, stringLiteral().bind(Traits::TypeName))
-                                                ).bind("typeNameCallExpr")
+                                                ignoringParenCasts(
+                                                    callExpr(
+                                                        hasArgument(2, stringLiteral().bind(Traits::TypeName))
+                                                    ).bind("typeNameCallExpr")
+                                                )
                                             )
-                                        )), "this", true)
+                                        ), "this", true)
                                 )
                             )
                         ))
