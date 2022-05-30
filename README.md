@@ -114,3 +114,12 @@ _QWORD *sub_71000A3A30()
    This is supported by first looking for the vtable assignment and using that as a base address for all following writes. The byproduct of this is that every parameter is inlined in the call site, meaning we don't need to perform step 3 of our algorithm, and can just move on.
 </details>
 
+
+<details>
+   <summary>`base::global::CStrId` inlining</summary>
+   
+   Much to our dismay (as customary when dealing with compilers), calls to `base::global::CStrId` (which we look for to identify the name of the type for which reflection data is constructed) can get inlined when the construction of said reflection data is called from large functions that construct more than once.
+   
+   In those situations, we instead look for what is effectively a call into the game's string pool, tasked with pooling the string, which got inlined in the call parameters. However, because Hex-Rays will reuse pseudoregisters across occurences of this code, we only consider calls that are less than 15 lines of code away from the call site of interest (which, realistically, is far more than enough).
+   
+</details>
