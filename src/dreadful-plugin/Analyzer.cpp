@@ -235,14 +235,14 @@ auto Analyzer::Analyze(clang::ASTContext& context, const IDA::API::Function& fun
                 }();
                 auto rawValue = integerLit->getValue();
 
-                // TODO: Check if my before-sleep brain messed up endianness here.
+                // TODO: Check if my sleep deprived brain messed up endianness here.
 
                 size_t bitCount = valueTypeInfo.has_value()
                     ? valueTypeInfo->Width
                     : 64;
 
-                size_t segmentWidth = valueTypeInfo.has_value()
-                    ? 1uLL << std::log2(valueTypeInfo->Width)
+                size_t segmentWidth = valueTypeInfo->has_value()
+                    ? std::min(valueTypeInfo->Width, 64)
                     : 64;
 
                 for (size_t bitIndex = 0; bitIndex < bitCount; bitIndex += segmentWidth) {
