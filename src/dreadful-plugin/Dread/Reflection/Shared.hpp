@@ -7,8 +7,8 @@
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 
 #include <AST/Matchers.hpp>
-
 #include <CallableTraits/CallableTraits.hpp>
+#include <IDA/API.hpp>
 
 #include <functional>
 
@@ -175,8 +175,14 @@ namespace Dread::Reflection {
         template <size_t Offset, Types::PropertySemanticKind Kind, typename T, typename C, T C::*P>
         struct PropertyInfo<Offset, Kind, P> {
             static bool TryAssign(T* instance, size_t offset, Types::PropertySemanticKind kind, uint64_t value) {
-                if (offset != Offset || kind != Kind)
+                if (offset != Offset)
                     return false;
+
+                if (kind != Kind) {
+                    IDA::API::Message("(Dread) Invalid kind for value at {:x}: Expected {}, got {}.",
+                        Offset, Kind, kind);
+                    return false;
+                }
 
                 std::invoke(instance, P) = value;
                 return true;
@@ -267,7 +273,7 @@ namespace Dread::Reflection {
                                             custom_matchers::closestPreceding("self", 15),
 
                                             hasOperatorName("="), hasOperands(
-                                            declRefExpr(to(varDecl(equalsBoundNode("this")))),
+                                                declRefExpr(to(varDecl(equalsBoundNode("this")))),
                                                 ignoringParenCasts(
                                                     callExpr(
                                                         hasArgument(2, stringLiteral().bind(Traits::TypeName))
